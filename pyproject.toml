@@ -7,7 +7,7 @@ name = "dr-reviewer"
 version = "0.1.0"
 description = "Local-first, read-only design-requirement review workflow"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["PyYAML>=6.0"]
 
 [project.scripts]
 dr-review = "dr_reviewer.cli:main"

@@ -6,7 +6,9 @@ import unittest
 from pathlib import Path
 
 from dr_reviewer.workflow import (
+    build_source_registry,
     import_findings,
+    import_reconciliations,
     import_verifications,
     initialize_review,
     record_decision,
@@ -89,7 +91,7 @@ class ReviewWorkflowTests(unittest.TestCase):
             finding["originating_tracks"],
             ["br_traceability", "internal_consistency"],
         )
-        with self.assertRaisesRegex(ValueError, "independent verification"):
+        with self.assertRaisesRegex(ValueError, "independently verified"):
             record_decision(
                 self.review_dir,
                 finding["finding_id"],
@@ -110,6 +112,29 @@ class ReviewWorkflowTests(unittest.TestCase):
             },
         )
         self.assertEqual(import_verifications(self.review_dir, verification_path), 1)
+        with self.assertRaisesRegex(ValueError, "reconciled"):
+            record_decision(
+                self.review_dir,
+                finding["finding_id"],
+                "accept",
+                "Reviewer",
+            )
+        reconciliation_path = self._write_json(
+            "reconciliations.json",
+            {
+                "reconciliations": [
+                    {
+                        "finding_id": finding["finding_id"],
+                        "severity": "high",
+                        "rationale": "Use the higher reported severity pending user review.",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(
+            import_reconciliations(self.review_dir, reconciliation_path),
+            1,
+        )
         record_decision(
             self.review_dir,
             finding["finding_id"],
@@ -150,6 +175,22 @@ class ReviewWorkflowTests(unittest.TestCase):
                 scope="targeted",
             )
 
+    def test_rejects_findings_outside_targeted_scope(self) -> None:
+        review_dir = initialize_review(
+            function_key="FN006",
+            dr_path=self.dr,
+            br_path=self.br,
+            runs_dir=self.root / "runs",
+            scope="targeted",
+            tracks=["br_traceability"],
+        )
+        findings_path = self._write_json(
+            "out-of-scope.json",
+            {"findings": [self._finding("internal_consistency")]},
+        )
+        with self.assertRaisesRegex(ValueError, "outside the confirmed review scope"):
+            import_findings(review_dir, findings_path)
+
     def test_records_optional_page_provenance(self) -> None:
         review_dir = initialize_review(
             function_key="FN003",
@@ -167,6 +208,58 @@ class ReviewWorkflowTests(unittest.TestCase):
         self.assertEqual(state["dr_page_id"], "DR-123")
         self.assertEqual(state["dr_version"], "4")
         self.assertEqual(state["reviewer"], "Reviewer")
+
+    def test_builds_source_registry_from_unchanged_snapshot(self) -> None:
+        registry_path = build_source_registry(self.review_dir)
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [source["source_id"] for source in registry["sources"]],
+            ["SRC-DR-PAGE", "SRC-BR-PAGE"],
+        )
+
+    def test_records_local_workshop_context_with_configured_authority(self) -> None:
+        context = self.root / "workshop.md"
+        context.write_text("Approved decision: retain the account number.", encoding="utf-8")
+        review_dir = initialize_review(
+            function_key="FN004",
+            dr_path=self.dr,
+            br_path=self.br,
+            runs_dir=self.root / "runs",
+            context_sources=[("workshop_decision", context)],
+        )
+        registry = json.loads(
+            (review_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        source = registry["sources"][-1]
+        self.assertEqual(source["type"], "workshop_decision")
+        self.assertEqual(source["authoritative_for"], ["approved_decision"])
+
+    def test_rejects_context_source_with_unconfigured_type(self) -> None:
+        context = self.root / "misc.md"
+        context.write_text("Context.", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Unknown local context source type"):
+            initialize_review(
+                function_key="FN005",
+                dr_path=self.dr,
+                br_path=self.br,
+                runs_dir=self.root / "runs",
+                context_sources=[("unknown_context", context)],
+            )
+
+    def test_completes_review_when_no_findings_are_reported(self) -> None:
+        findings_path = self._write_json("empty-findings.json", {"findings": []})
+        self.assertEqual(import_findings(self.review_dir, findings_path), 0)
+        report = render_report(self.review_dir).read_text(encoding="utf-8")
+        self.assertIn("Status: **completed**", report)
+        self.assertIn("No findings have been imported.", report)
+
+    def test_requires_must_change_for_high_severity(self) -> None:
+        finding = self._finding("br_traceability", "high")
+        finding["must_change"] = False
+        findings_path = self._write_json("bad-severity.json", {"findings": [finding]})
+
+        with self.assertRaisesRegex(ValueError, "must_change=true"):
+            import_findings(self.review_dir, findings_path)
 
 
 if __name__ == "__main__":

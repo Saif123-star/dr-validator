@@ -10,12 +10,15 @@ from .workflow import (
     TRACKS,
     create_brief,
     get_status,
+    build_source_registry,
     import_findings,
     import_function_map,
+    import_reconciliations,
     import_verifications,
     initialize_review,
     record_decision,
     render_report,
+    validate_findings,
 )
 
 
@@ -41,6 +44,13 @@ def _parser() -> argparse.ArgumentParser:
     init.add_argument("--br-version")
     init.add_argument("--br-url")
     init.add_argument("--reviewer")
+    init.add_argument(
+        "--context-source",
+        action="append",
+        default=[],
+        metavar="TYPE=PATH",
+        help="Add local context: workshop_decision, figma_export, or comment_export",
+    )
 
     brief = commands.add_parser("brief", help="Regenerate the locked review brief")
     brief.add_argument("review_dir", type=Path)
@@ -49,12 +59,33 @@ def _parser() -> argparse.ArgumentParser:
     findings.add_argument("review_dir", type=Path)
     findings.add_argument("findings_file", type=Path)
 
+    validate = commands.add_parser(
+        "findings-validate",
+        help="Validate findings against the review scope and source snapshots",
+    )
+    validate.add_argument("review_dir", type=Path)
+    validate.add_argument("findings_file", type=Path)
+
+    registry = commands.add_parser(
+        "source-registry",
+        help="Verify source snapshots and rebuild the source registry",
+    )
+    registry.add_argument("review_dir", type=Path)
+    registry.add_argument("--output", type=Path)
+
     verifications = commands.add_parser(
         "verifications-import",
         help="Import independent verification results",
     )
     verifications.add_argument("review_dir", type=Path)
     verifications.add_argument("verification_file", type=Path)
+
+    reconciliations = commands.add_parser(
+        "reconciliations-import",
+        help="Import resolutions for verified finding conflicts",
+    )
+    reconciliations.add_argument("review_dir", type=Path)
+    reconciliations.add_argument("reconciliation_file", type=Path)
 
     function_map = commands.add_parser(
         "function-map-import",
@@ -84,6 +115,15 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "init":
+            context_sources = []
+            for value in args.context_source:
+                source_type, separator, source_path = value.partition("=")
+                if not separator or not source_type or not source_path:
+                    raise ValueError(
+                        "--context-source must use TYPE=PATH, for example "
+                        "workshop_decision=decisions.md"
+                    )
+                context_sources.append((source_type, Path(source_path)))
             review_dir = initialize_review(
                 function_key=args.function_key,
                 dr_path=args.dr,
@@ -99,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
                 br_version=args.br_version,
                 br_url=args.br_url,
                 reviewer=args.reviewer,
+                context_sources=context_sources,
             )
             print(review_dir)
         elif args.command == "brief":
@@ -106,9 +147,17 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "findings-import":
             count = import_findings(args.review_dir, args.findings_file)
             print(f"Imported {count} merged finding(s).")
+        elif args.command == "findings-validate":
+            count = validate_findings(args.review_dir, args.findings_file)
+            print(f"Validated {count} finding(s); no review state was changed.")
+        elif args.command == "source-registry":
+            print(build_source_registry(args.review_dir, args.output))
         elif args.command == "verifications-import":
             count = import_verifications(args.review_dir, args.verification_file)
             print(f"Imported {count} verification result(s).")
+        elif args.command == "reconciliations-import":
+            count = import_reconciliations(args.review_dir, args.reconciliation_file)
+            print(f"Imported {count} reconciliation result(s).")
         elif args.command == "function-map-import":
             count = import_function_map(args.review_dir, args.function_map_file)
             print(f"Imported {count} function-map entry(ies).")

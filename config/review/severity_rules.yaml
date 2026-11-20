@@ -1,0 +1,21 @@
+levels:
+  critical:
+    rank: 0
+    must_change_default: true
+    description: Unsafe, legally problematic, security-sensitive, or fundamentally incorrect implementation.
+  high:
+    rank: 1
+    must_change_default: true
+    description: A major business flow cannot be implemented or would be implemented incorrectly.
+  medium:
+    rank: 2
+    must_change_default: false
+    description: Ambiguity or inconsistency creates meaningful rework or test risk.
+  low:
+    rank: 3
+    must_change_default: false
+    description: Clarity, consistency, or maintainability issue with limited behavioral risk.
+  observation:
+    rank: 4
+    must_change_default: false
+    description: Useful suggestion that is not a required change.

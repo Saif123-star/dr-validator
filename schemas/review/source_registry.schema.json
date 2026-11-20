@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source_registry.schema.json",
+  "title": "DR review source registry",
+  "type": "object",
+  "required": ["sources"],
+  "properties": {
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "source_id",
+          "type",
+          "filename",
+          "snapshot_path",
+          "sha256",
+          "captured_at",
+          "size_bytes",
+          "availability",
+          "text_extraction",
+          "authoritative_for",
+          "applicable_tracks"
+        ],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "type": {"type": "string", "minLength": 1},
+          "page_id": {"type": ["string", "null"]},
+          "version": {"type": ["string", "null"]},
+          "url": {"type": ["string", "null"]},
+          "filename": {"type": "string", "minLength": 1},
+          "snapshot_path": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "captured_at": {"type": "string", "format": "date-time"},
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "availability": {"enum": ["available", "unavailable"]},
+          "text_extraction": {"enum": ["extracted", "empty", "non_text", "unsupported"]},
+          "authoritative_for": {"type": "array", "items": {"type": "string"}},
+          "applicable_tracks": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

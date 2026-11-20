@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "decision.schema.json",
+  "title": "DR finding human decision",
+  "type": "object",
+  "required": ["finding_id", "decision", "owner", "timestamp"],
+  "properties": {
+    "finding_id": {"type": "string", "minLength": 1},
+    "decision": {
+      "enum": [
+        "accept",
+        "reject",
+        "defer",
+        "already_addressed",
+        "needs_clarification",
+        "accepted_risk"
+      ]
+    },
+    "owner": {"type": "string", "minLength": 1},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "rationale": {"type": "string"},
+    "intended_action": {"type": "string"}
+  },
+  "additionalProperties": false
+}

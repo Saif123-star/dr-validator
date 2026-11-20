@@ -38,7 +38,7 @@ class _HTMLTextParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
 
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+    def handle_starttag(self, tag: str, _attrs: list[tuple[str, str | None]]) -> None:
         if tag.lower() in _BLOCK_TAGS:
             self.parts.append("\n")
 

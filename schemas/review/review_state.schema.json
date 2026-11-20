@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "review_state.schema.json",
+  "title": "DR review state",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "function_key",
+    "review_id",
+    "status",
+    "scope",
+    "tracks",
+    "created_at",
+    "baseline_timestamp",
+    "updated_at",
+    "sources",
+    "finding_count",
+    "decision_count"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "function_key": {"type": "string", "minLength": 1},
+    "review_id": {"type": "string", "pattern": "^R[0-9]{3}$"},
+    "status": {
+      "enum": [
+        "initialized",
+        "sources_ready",
+        "awaiting_scope",
+        "reviewing",
+        "merging",
+        "verifying",
+        "reconciling",
+        "awaiting_decisions",
+        "completed",
+        "source_failed",
+        "review_failed",
+        "verification_failed"
+      ]
+    },
+    "scope": {"enum": ["full", "targeted"]},
+    "tracks": {"type": "array", "items": {"type": "string"}},
+    "created_at": {"type": "string", "format": "date-time"},
+    "baseline_timestamp": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "reviewer": {"type": ["string", "null"]},
+    "dr_page_id": {"type": ["string", "null"]},
+    "dr_version": {"type": ["string", "null"]},
+    "br_page_id": {"type": ["string", "null"]},
+    "br_version": {"type": ["string", "null"]},
+    "sources": {"type": "array", "items": {"type": "object"}},
+    "finding_count": {"type": "integer", "minimum": 0},
+    "decision_count": {"type": "integer", "minimum": 0},
+    "function_map_count": {"type": "integer", "minimum": 0},
+    "previous_review_id": {"type": ["string", "null"]}
+  },
+  "additionalProperties": true
+}

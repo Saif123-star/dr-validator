@@ -1,0 +1,33 @@
+name: dr-review-phase-1
+description: Local-first, read-only design-requirement review
+external_writes: false
+tracks:
+  document_integrity:
+    prompt: prompts_review/tracks/10_document_integrity.md
+    sources: [dr_page, attachment]
+  br_traceability:
+    prompt: prompts_review/tracks/20_br_traceability.md
+    sources: [dr_page, br_page]
+  internal_consistency:
+    prompt: prompts_review/tracks/30_internal_consistency.md
+    sources: [dr_page]
+  ui_ux_context:
+    prompt: prompts_review/tracks/40_ui_ux_context.md
+    sources: [dr_page, attachment, figma_export, workshop_decision, comment_export]
+  technical_mapping:
+    prompt: prompts_review/tracks/50_technical_mapping.md
+    sources: [dr_page, br_page, attachment, workshop_decision]
+stages:
+  initialized: [sources_ready, source_failed]
+  sources_ready: [awaiting_scope, reviewing]
+  awaiting_scope: [reviewing]
+  reviewing: [merging, review_failed]
+  merging: [verifying, review_failed]
+  verifying: [reconciling, awaiting_decisions, verification_failed]
+  reconciling: [awaiting_decisions, review_failed]
+  awaiting_decisions: [completed]
+  completed: []
+failure_states:
+  - source_failed
+  - review_failed
+  - verification_failed

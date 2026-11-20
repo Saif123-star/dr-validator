@@ -10,17 +10,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .config import (
+    PIPELINE_CONFIG,
+    REPOSITORY_ROOT,
+    SEVERITY_CONFIG,
+    SOURCE_AUTHORITY_CONFIG,
+)
 from .documents import extract_text, normalize_quote
 
 
-TRACKS = (
-    "document_integrity",
-    "br_traceability",
-    "internal_consistency",
-    "ui_ux_context",
-    "technical_mapping",
+TRACKS = tuple(PIPELINE_CONFIG["tracks"])
+SEVERITIES = tuple(
+    severity
+    for severity, _ in sorted(
+        SEVERITY_CONFIG["levels"].items(),
+        key=lambda item: item[1]["rank"],
+    )
 )
-SEVERITIES = ("critical", "high", "medium", "low", "observation")
 CONFIDENCE_LEVELS = ("high", "medium", "low")
 VERDICTS = (
     "verified",
@@ -40,71 +46,41 @@ DECISIONS = (
     "accepted_risk",
 )
 _FUNCTION_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-_SEVERITY_RANK = {severity: index for index, severity in enumerate(SEVERITIES)}
-_FINDING_SCHEMA = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "required": ["findings"],
-    "properties": {
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": [
-                    "track",
-                    "rule_id",
-                    "title",
-                    "severity",
-                    "confidence",
-                    "category",
-                    "must_change",
-                    "summary",
-                    "impact",
-                    "recommendation",
-                    "evidence",
-                    "affected_sections",
-                    "requires_human_decision",
-                ],
-                "properties": {
-                    "track": {"enum": list(TRACKS)},
-                    "rule_id": {"type": "string", "minLength": 1},
-                    "title": {"type": "string", "minLength": 1},
-                    "severity": {"enum": list(SEVERITIES)},
-                    "confidence": {"enum": list(CONFIDENCE_LEVELS)},
-                    "category": {"type": "string", "minLength": 1},
-                    "must_change": {"type": "boolean"},
-                    "summary": {"type": "string", "minLength": 1},
-                    "impact": {"type": "string", "minLength": 1},
-                    "recommendation": {"type": "string", "minLength": 1},
-                    "evidence": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "required": ["source_id", "locator", "quote"],
-                            "properties": {
-                                "source_id": {"type": "string", "minLength": 1},
-                                "locator": {"type": "string", "minLength": 1},
-                                "quote": {"type": "string", "minLength": 1},
-                            },
-                        },
-                    },
-                    "related_sources": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                    },
-                    "affected_sections": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {"type": "string", "minLength": 1},
-                    },
-                    "requires_human_decision": {"type": "boolean"},
-                    "decision_question": {"type": ["string", "null"]},
-                },
-            },
-        }
-    },
+_SEVERITY_RANK = {
+    severity: config["rank"]
+    for severity, config in SEVERITY_CONFIG["levels"].items()
 }
+_FINDING_SCHEMA = json.loads(
+    (REPOSITORY_ROOT / "schemas" / "review" / "finding.schema.json").read_text(
+        encoding="utf-8"
+    )
+)
+_VERIFICATION_SCHEMA = json.loads(
+    (
+        REPOSITORY_ROOT
+        / "schemas"
+        / "review"
+        / "verification_result.schema.json"
+    ).read_text(encoding="utf-8")
+)
+_DECISION_SCHEMA = json.loads(
+    (REPOSITORY_ROOT / "schemas" / "review" / "decision.schema.json").read_text(
+        encoding="utf-8"
+    )
+)
+_REVIEW_STATE_SCHEMA = json.loads(
+    (REPOSITORY_ROOT / "schemas" / "review" / "review_state.schema.json").read_text(
+        encoding="utf-8"
+    )
+)
+_SOURCE_REGISTRY_SCHEMA = json.loads(
+    (
+        REPOSITORY_ROOT
+        / "schemas"
+        / "review"
+        / "source_registry.schema.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 def _now() -> str:
@@ -181,6 +157,7 @@ def _source_record(
     snapshot = source_dir / source_path.name
     shutil.copy2(source_path, snapshot)
     _, extraction_status = extract_text(snapshot)
+    authority = SOURCE_AUTHORITY_CONFIG["source_types"].get(source_type, {})
     return {
         "source_id": source_id,
         "type": source_type,
@@ -194,8 +171,8 @@ def _source_record(
         "page_id": page_id,
         "version": version,
         "url": url,
-        "authoritative_for": authoritative_for,
-        "applicable_tracks": tracks,
+        "authoritative_for": authority.get("authoritative_for", authoritative_for),
+        "applicable_tracks": authority.get("applicable_tracks", tracks),
     }
 
 
@@ -214,6 +191,7 @@ def initialize_review(
     br_version: str | None = None,
     br_url: str | None = None,
     reviewer: str | None = None,
+    context_sources: list[tuple[str, Path]] | None = None,
 ) -> Path:
     if not _FUNCTION_KEY.fullmatch(function_key):
         raise ValueError("Function Key must be 1-64 letters, digits, underscores, or hyphens")
@@ -245,6 +223,13 @@ def initialize_review(
                 raise ValueError(f"Symbolic links are not allowed in attachments: {item}")
             if item.is_file():
                 attachment_files.append(item.resolve())
+    validated_context: list[tuple[str, Path]] = []
+    for source_type, source_path in context_sources or []:
+        if source_type not in SOURCE_AUTHORITY_CONFIG["source_types"]:
+            raise ValueError(f"Unknown local context source type: {source_type}")
+        validated_context.append(
+            (source_type, _require_file(source_path, f"{source_type} source"))
+        )
 
     function_dir = runs_dir / function_key
     reviews_dir = function_dir / "reviews"
@@ -289,6 +274,17 @@ def initialize_review(
                     ["document_integrity", "ui_ux_context", "technical_mapping"],
                 )
             )
+        for index, (source_type, source_path) in enumerate(validated_context, start=1):
+            sources.append(
+                _source_record(
+                    stage,
+                    f"SRC-CONTEXT-{index:04d}",
+                    source_type,
+                    source_path,
+                    [],
+                    [],
+                )
+            )
 
         created_at = _now()
         state = {
@@ -317,6 +313,12 @@ def initialize_review(
         _write_json(stage / "agent_findings.template.json", {"findings": []})
         _write_json(stage / "finding.schema.json", _FINDING_SCHEMA)
         _write_json(stage / "verification.template.json", {"verifications": []})
+        _write_json(stage / "verification_result.schema.json", _VERIFICATION_SCHEMA)
+        _write_json(stage / "decision.schema.json", _DECISION_SCHEMA)
+        _write_json(stage / "review_state.schema.json", _REVIEW_STATE_SCHEMA)
+        _write_json(stage / "source_registry.schema.json", _SOURCE_REGISTRY_SCHEMA)
+        _write_json(stage / "decision.template.json", {"decisions": []})
+        _write_json(stage / "reconciliation.template.json", {"reconciliations": []})
         _write_brief(stage / "review_brief.md", state)
         stage.rename(review_dir)
     except Exception:
@@ -374,9 +376,13 @@ def _write_brief(path: Path, state: dict[str, Any]) -> None:
         "## Specialist review instructions",
         "Return only evidence-backed findings in `agent_findings.template.json`.",
         "Use `finding.schema.json` for the required fields and allowed values.",
+        "Use `verification.template.json` with `verification_result.schema.json`",
+        "for independent verification results.",
         "Every finding must cite one or more source IDs with a locator and an exact quote.",
         "Do not invent APIs, database mappings, requirements, or missing evidence.",
         "Use the declared track names and severity levels shown in the template.",
+        "Default source precedence: "
+        + " > ".join(SOURCE_AUTHORITY_CONFIG["precedence"]),
         "The workflow checks citation text and merges duplicates; it does not perform",
         "semantic review or automatically launch specialist agents.",
         "",
@@ -407,16 +413,18 @@ def _string_list(value: Any, label: str, allow_empty: bool = False) -> list[str]
 
 
 def _finding_key(finding: dict[str, Any]) -> str:
-    locator = min(
-        (normalize_quote(item["locator"]) for item in finding["evidence"]),
-        default="",
+    evidence_refs = "|".join(
+        sorted(
+            f"{item['source_id']}:{normalize_quote(item['locator'])}"
+            for item in finding["evidence"]
+        )
     )
     sections = "|".join(sorted(normalize_quote(item) for item in finding["affected_sections"]))
     return "|".join(
         (
             normalize_quote(finding["rule_id"]),
             normalize_quote(finding["category"]),
-            locator,
+            evidence_refs,
             sections,
         )
     )
@@ -452,6 +460,13 @@ def _validate_finding(
 
     if not isinstance(value.get("must_change"), bool):
         raise ValueError("finding.must_change must be a boolean")
+    if (
+        SEVERITY_CONFIG["levels"][finding["severity"]]["must_change_default"]
+        and not value["must_change"]
+    ):
+        raise ValueError(
+            f"Severity '{finding['severity']}' requires must_change=true"
+        )
     if not isinstance(value.get("requires_human_decision"), bool):
         raise ValueError("finding.requires_human_decision must be a boolean")
     finding["must_change"] = value["must_change"]
@@ -569,12 +584,14 @@ def _merge_group(items: list[dict[str, Any]], function_key: str, review_id: str)
 
 
 def import_findings(review_dir: Path, findings_path: Path) -> int:
+    return merge_findings(review_dir, findings_path)
+
+
+def _read_findings_input(
+    review_dir: Path,
+    findings_path: Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     state = _load_state(review_dir)
-    if state["status"] not in {"sources_ready", "reviewing"}:
-        raise ValueError("Findings can only be imported before verification and decisions")
-    existing = _read_json(review_dir / "findings.json").get("findings", [])
-    if existing:
-        raise ValueError("Findings already exist; do not overwrite a reviewed finding set")
     payload = _read_json(findings_path)
     values = payload.get("findings") if isinstance(payload, dict) else payload
     if not isinstance(values, list):
@@ -588,6 +605,27 @@ def import_findings(review_dir: Path, findings_path: Path) -> int:
     validated = [
         _validate_finding(value, sources_by_id, text_by_source) for value in values
     ]
+    for finding in validated:
+        if finding["track"] not in state["tracks"]:
+            raise ValueError(
+                f"Finding track {finding['track']} is outside the confirmed review scope"
+            )
+    return state, validated
+
+
+def validate_findings(review_dir: Path, findings_path: Path) -> int:
+    _, validated = _read_findings_input(review_dir, findings_path)
+    return len(validated)
+
+
+def merge_findings(review_dir: Path, findings_path: Path) -> int:
+    state = _load_state(review_dir)
+    if state["status"] not in {"sources_ready", "reviewing"}:
+        raise ValueError("Findings can only be imported before verification and decisions")
+    existing = _read_json(review_dir / "findings.json").get("findings", [])
+    if existing:
+        raise ValueError("Findings already exist; do not overwrite a reviewed finding set")
+    _, validated = _read_findings_input(review_dir, findings_path)
     groups: dict[str, list[dict[str, Any]]] = {}
     for finding in validated:
         groups.setdefault(_finding_key(finding), []).append(finding)
@@ -600,6 +638,39 @@ def import_findings(review_dir: Path, findings_path: Path) -> int:
     state["finding_count"] = len(merged)
     _save_state(review_dir, state)
     return len(merged)
+
+
+def build_source_registry(review_dir: Path, output_path: Path | None = None) -> Path:
+    state = _load_state(review_dir)
+    for source in state["sources"]:
+        _source_text(review_dir, source)
+    registry = {"sources": state["sources"]}
+    registry_path = output_path or review_dir / "manifest.json"
+    _write_json(registry_path, registry)
+    return registry_path
+
+
+def _advance_after_verification(
+    state: dict[str, Any], findings: list[dict[str, Any]]
+) -> None:
+    if any(finding["verification"].get("verdict") is None for finding in findings):
+        state["status"] = "verifying"
+        return
+    terminal_verdicts = {"rejected", "duplicate", "insufficient_evidence"}
+    for finding in findings:
+        if finding["verification"].get("verdict") in terminal_verdicts:
+            finding["reconciliation_required"] = False
+    actionable = [
+        finding
+        for finding in findings
+        if finding["verification"].get("verdict") not in terminal_verdicts
+    ]
+    if not actionable:
+        state["status"] = "completed"
+    elif any(finding.get("reconciliation_required") for finding in actionable):
+        state["status"] = "reconciling"
+    else:
+        state["status"] = "awaiting_decisions"
 
 
 def import_verifications(review_dir: Path, verification_path: Path) -> int:
@@ -630,15 +701,103 @@ def import_verifications(review_dir: Path, verification_path: Path) -> int:
             raise ValueError(f"Unknown verification verdict: {verdict}")
         rationale = _string(value.get("rationale"), "verification.rationale")
         finding = findings_by_id[finding_id]
+        if finding["verification"].get("verdict") is not None:
+            raise ValueError(f"Finding already has a verification: {finding_id}")
+        severity = value.get("severity")
+        severity_changed = False
+        if severity is not None:
+            if not isinstance(severity, str) or severity.casefold() not in SEVERITIES:
+                raise ValueError(f"Unknown verification severity: {severity}")
+            severity = severity.casefold()
+            if severity != finding["severity"]:
+                finding["severity"] = severity
+                finding["reconciliation_required"] = True
+                severity_changed = True
+        elif verdict in {"downgraded", "upgraded"}:
+            raise ValueError(f"Verification verdict '{verdict}' requires a severity")
         finding["verification"]["verdict"] = verdict
         finding["verification"]["rationale"] = rationale
+        finding["verification"]["severity"] = severity
+        finding["verification"]["severity_changed"] = severity_changed
         if value.get("duplicate_of") is not None:
             finding["verification"]["duplicate_of"] = _string(
                 value["duplicate_of"], "verification.duplicate_of"
             )
 
+    _advance_after_verification(state, findings)
     _write_json(review_dir / "findings.json", findings_payload)
-    state["status"] = "awaiting_decisions"
+    _save_state(review_dir, state)
+    return len(values)
+
+
+def import_reconciliations(review_dir: Path, reconciliation_path: Path) -> int:
+    state = _load_state(review_dir)
+    payload = _read_json(review_dir / "findings.json")
+    findings = payload.get("findings", [])
+    if not findings:
+        raise ValueError("There are no findings to reconcile")
+    if any(finding["verification"].get("verdict") is None for finding in findings):
+        raise ValueError("Every finding must be independently verified before reconciliation")
+
+    reconciliation_payload = _read_json(reconciliation_path)
+    values = (
+        reconciliation_payload.get("reconciliations")
+        if isinstance(reconciliation_payload, dict)
+        else None
+    )
+    if not isinstance(values, list) or not values:
+        raise ValueError("Reconciliation input must contain a reconciliations list")
+    findings_by_id = {finding["finding_id"]: finding for finding in findings}
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("Each reconciliation must be a JSON object")
+        finding_id = _string(value.get("finding_id"), "reconciliation.finding_id")
+        if finding_id not in findings_by_id:
+            raise ValueError(f"Reconciliation refers to unknown finding: {finding_id}")
+        if finding_id in seen:
+            raise ValueError(f"Duplicate reconciliation for finding: {finding_id}")
+        seen.add(finding_id)
+        finding = findings_by_id[finding_id]
+        if not finding.get("reconciliation_required"):
+            raise ValueError(f"Finding does not require reconciliation: {finding_id}")
+        rationale = _string(value.get("rationale"), "reconciliation.rationale")
+        recommendation = value.get("recommendation")
+        severity = value.get("severity")
+        if severity is not None:
+            if not isinstance(severity, str) or severity.casefold() not in SEVERITIES:
+                raise ValueError(f"Unknown reconciliation severity: {severity}")
+            severity = severity.casefold()
+        if len(finding["recommendation"].split("\n\n")) > 1:
+            recommendation = _string(
+                recommendation, "reconciliation.recommendation"
+            )
+            options = finding["recommendation"].split("\n\n")
+            if recommendation not in options:
+                raise ValueError(
+                    "Reconciliation recommendation must select one of the merged recommendations"
+                )
+            finding["recommendation"] = recommendation
+        if (
+            finding.get("severity_conflict")
+            or finding["verification"].get("severity_changed")
+        ):
+            if severity is None:
+                raise ValueError(
+                    "A severity is required to resolve the finding's severity conflict"
+                )
+        if severity is not None:
+            finding["severity"] = severity
+        finding["reconciliation"] = {
+            "rationale": rationale,
+            "recommendation": finding["recommendation"],
+            "severity": finding["severity"],
+            "timestamp": _now(),
+        }
+        finding["reconciliation_required"] = False
+
+    _advance_after_verification(state, findings)
+    _write_json(review_dir / "findings.json", payload)
     _save_state(review_dir, state)
     return len(values)
 
@@ -667,19 +826,28 @@ def record_decision(
     owner = _string(owner, "decision owner")
     findings_payload = _read_json(review_dir / "findings.json")
     findings = findings_payload.get("findings", [])
+    if any(item.get("verification", {}).get("verdict") is None for item in findings):
+        raise ValueError("All findings must be independently verified before decisions")
+    if any(item.get("reconciliation_required") for item in findings):
+        raise ValueError("All finding conflicts must be reconciled before decisions")
     finding = next(
         (item for item in findings if item.get("finding_id") == finding_id),
         None,
     )
     if finding is None:
         raise ValueError(f"Unknown finding ID: {finding_id}")
+    if finding.get("decision") is not None:
+        raise ValueError(f"A decision is already recorded for finding: {finding_id}")
     verdict = finding.get("verification", {}).get("verdict")
     if verdict is None:
         raise ValueError("A finding needs independent verification before a decision")
     if verdict in {"rejected", "duplicate", "insufficient_evidence"}:
         raise ValueError(f"A finding with verdict '{verdict}' cannot receive a decision")
+    if finding.get("reconciliation_required"):
+        raise ValueError("A finding needs reconciliation before a human decision")
     finding["decision"] = {
-        "value": decision,
+        "finding_id": finding_id,
+        "decision": decision,
         "owner": owner,
         "timestamp": _now(),
         "rationale": rationale.strip(),
@@ -794,7 +962,7 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
                 f"- Reconciliation required: "
                 f"{'yes' if finding['reconciliation_required'] else 'no'}",
                 f"- Decision: "
-                f"{finding['decision']['value'] if finding['decision'] else 'not recorded'}",
+                f"{finding['decision']['decision'] if finding['decision'] else 'not recorded'}",
                 "",
                 finding["summary"],
                 "",
@@ -815,6 +983,14 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
                 [
                     "",
                     f"**Verification rationale:** {finding['verification']['rationale']}",
+                ]
+            )
+        reconciliation = finding.get("reconciliation")
+        if reconciliation:
+            lines.extend(
+                [
+                    "",
+                    f"**Reconciliation rationale:** {reconciliation['rationale']}",
                 ]
             )
         if finding["decision"]:
@@ -853,5 +1029,12 @@ def get_status(review_dir: Path) -> dict[str, Any]:
         "sources": len(state["sources"]),
         "findings": len(findings),
         "decisions": sum(finding.get("decision") is not None for finding in findings),
+        "unverified": sum(
+            finding.get("verification", {}).get("verdict") is None
+            for finding in findings
+        ),
+        "needs_reconciliation": sum(
+            finding.get("reconciliation_required", False) for finding in findings
+        ),
         "review_dir": str(review_dir.resolve()),
     }

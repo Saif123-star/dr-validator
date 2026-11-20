@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "verification_result.schema.json",
+  "title": "DR finding verification result",
+  "type": "object",
+  "required": ["finding_id", "verdict", "rationale"],
+  "properties": {
+    "finding_id": {"type": "string", "minLength": 1},
+    "verdict": {
+      "enum": [
+        "verified",
+        "rejected",
+        "downgraded",
+        "upgraded",
+        "duplicate",
+        "needs_human_decision",
+        "insufficient_evidence"
+      ]
+    },
+    "rationale": {"type": "string", "minLength": 1},
+    "duplicate_of": {"type": "string"},
+    "severity": {"enum": ["critical", "high", "medium", "low", "observation"]}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {"enum": ["downgraded", "upgraded"]}
+        },
+        "required": ["verdict"]
+      },
+      "then": {"required": ["severity"]}
+    }
+  ],
+  "additionalProperties": false
+}
