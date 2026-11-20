@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dr-reviewer"
+version = "0.1.0"
+description = "Local-first, read-only design-requirement review workflow"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+dr-review = "dr_reviewer.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
