@@ -5,18 +5,12 @@ import json
 import sys
 from pathlib import Path
 
-from .confluence import ConfluenceClient, ConfluenceSettings
-from .publication import (
-    ReviewPagePublisher,
-    approve_publication,
-    build_publication_plan,
-    verify_publication,
-)
 from .sources import PageSource, initialize_review_from_sources
 from .workflow import (
     DECISIONS,
     TRACKS,
     create_brief,
+    export_workbook_evidence,
     get_status,
     build_source_registry,
     import_findings,
@@ -25,21 +19,15 @@ from .workflow import (
     import_verifications,
     record_decision,
     render_report,
+    render_review_comments,
     validate_findings,
 )
-
-
-def _confluence_client(env_file: Path | None) -> ConfluenceClient:
-    return ConfluenceClient(ConfluenceSettings.from_environment(env_file))
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dr-review",
-        description=(
-            "Design-requirement review workflow: read-only review, then an optional, "
-            "human-approved Confluence review page."
-        ),
+        description="Read-only Confluence capture and local design-requirement review.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -94,6 +82,12 @@ def _parser() -> argparse.ArgumentParser:
     registry.add_argument("review_dir", type=Path)
     registry.add_argument("--output", type=Path)
 
+    workbook = commands.add_parser(
+        "workbook-evidence",
+        help="Export hash-checked DR workbook cells for the review agents",
+    )
+    workbook.add_argument("review_dir", type=Path)
+
     verifications = commands.add_parser(
         "verifications-import",
         help="Import independent verification results",
@@ -127,40 +121,15 @@ def _parser() -> argparse.ArgumentParser:
     report.add_argument("review_dir", type=Path)
     report.add_argument("--output", type=Path)
 
+    comments = commands.add_parser(
+        "review-comments",
+        help="Render accepted findings to the local review_comments.md deliverable",
+    )
+    comments.add_argument("review_dir", type=Path)
+    comments.add_argument("--output", type=Path)
+
     status = commands.add_parser("status", help="Show the review state")
     status.add_argument("review_dir", type=Path)
-
-    plan = commands.add_parser(
-        "publish-plan",
-        help="Build the publication plan and page preview (writes nothing to Confluence)",
-    )
-    plan.add_argument("review_dir", type=Path)
-
-    approve = commands.add_parser(
-        "publish-approve",
-        help="Record a human approval that locks the publication plan hash",
-    )
-    approve.add_argument("review_dir", type=Path)
-    approve.add_argument("--approved-by", required=True)
-    approve.add_argument(
-        "--statement",
-        required=True,
-        help="The approver's own words authorizing publication",
-    )
-
-    publish = commands.add_parser(
-        "publish",
-        help="Create the approved Confluence review page; rerun to resume after a failure",
-    )
-    publish.add_argument("review_dir", type=Path)
-    publish.add_argument("--env-file", type=Path)
-
-    publish_verify = commands.add_parser(
-        "publish-verify",
-        help="Re-read the published review page and confirm it matches the plan",
-    )
-    publish_verify.add_argument("review_dir", type=Path)
-    publish_verify.add_argument("--env-file", type=Path)
     return parser
 
 
@@ -200,6 +169,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Validated {count} finding(s); no review state was changed.")
         elif args.command == "source-registry":
             print(build_source_registry(args.review_dir, args.output))
+        elif args.command == "workbook-evidence":
+            print(export_workbook_evidence(args.review_dir))
         elif args.command == "verifications-import":
             count = import_verifications(args.review_dir, args.verification_file)
             print(f"Imported {count} verification result(s).")
@@ -221,18 +192,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Recorded decision for {args.finding_id}.")
         elif args.command == "report":
             print(render_report(args.review_dir, args.output))
+        elif args.command == "review-comments":
+            print(render_review_comments(args.review_dir, args.output))
         elif args.command == "status":
             print(json.dumps(get_status(args.review_dir), ensure_ascii=False, indent=2))
-        elif args.command == "publish-plan":
-            print(build_publication_plan(args.review_dir))
-        elif args.command == "publish-approve":
-            print(approve_publication(args.review_dir, args.approved_by, args.statement))
-        elif args.command == "publish":
-            publisher = ReviewPagePublisher(args.review_dir, _confluence_client(args.env_file))
-            print(json.dumps(publisher.publish(), ensure_ascii=False, indent=2))
-        elif args.command == "publish-verify":
-            result = verify_publication(args.review_dir, _confluence_client(args.env_file))
-            print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (OSError, ValueError) as exc:
         print(f"dr-review: error: {exc}", file=sys.stderr)

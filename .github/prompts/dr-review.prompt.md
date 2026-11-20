@@ -1,6 +1,6 @@
 ---
 name: dr-review
-description: Start or resume a DR review, and optionally publish one approved Confluence review page.
+description: Start or resume a DR review and create a local Markdown file of accepted findings.
 agent: dr-reviewer
 argument-hint: "Function Key, DR URL, BR URL; or an existing review directory"
 ---
@@ -12,5 +12,6 @@ capturing the pages again. Ask only for missing required inputs.
 
 Follow the `dr-reviewer` orchestration instructions: invoke the applicable
 subagents and run the review commands yourself. Do not hand stage execution or
-JSON handling back to the user. Pause for finding decisions and separate
-publication approval, or report a blocker if you cannot advance.
+JSON handling back to the user. Pause for finding decisions. On completion,
+automatically create `review_comments.md` containing only findings the user
+accepted. Keep Confluence read-only and never write review results there.

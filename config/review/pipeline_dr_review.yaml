@@ -1,8 +1,7 @@
 name: dr-review
 description: >-
-  Read-only design-requirement review (Phase 1) with optional, human-approved
-  publication of one Confluence review page (Phase 2)
-external_writes: approved_review_page_only
+  Read-only design-requirement review with a local accepted-comments report
+external_writes: false
 tracks:
   document_integrity:
     prompt: prompts_review/tracks/10_document_integrity.md
@@ -12,7 +11,7 @@ tracks:
     sources: [dr_page, br_page]
   internal_consistency:
     prompt: prompts_review/tracks/30_internal_consistency.md
-    sources: [dr_page]
+    sources: [dr_page, attachment]
   ui_ux_context:
     prompt: prompts_review/tracks/40_ui_ux_context.md
     sources: [dr_page, attachment, figma_export, workshop_decision, comment_export]
@@ -28,14 +27,8 @@ stages:
   verifying: [reconciling, awaiting_decisions, verification_failed]
   reconciling: [awaiting_decisions, review_failed]
   awaiting_decisions: [completed]
-  completed: [publication_planned]
-  publication_planned: [publication_planned, publication_approved]
-  publication_approved: [publication_planned, publishing, publication_failed]
-  publishing: [published, publication_failed]
-  publication_failed: [publishing]
-  published: []
+  completed: []
 failure_states:
   - source_failed
   - review_failed
   - verification_failed
-  - publication_failed

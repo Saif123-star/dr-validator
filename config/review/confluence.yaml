@@ -2,7 +2,3 @@ api: cloud_rest_v2
 request_timeout_seconds: 30
 max_response_bytes: 52428800
 max_attachment_bytes: 104857600
-review_page:
-  title_template: "DR Review – {function_key} – {review_id}"
-  # Only findings whose human decision is listed here are published.
-  include_decisions: [accept]

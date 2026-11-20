@@ -10,6 +10,7 @@ status, and proposed disposition. Offer `accept`, `reject`, `defer`,
 `already_addressed`, `needs_clarification`, or `accepted_risk`.
 
 Record decision owner, timestamp, optional rationale, and intended follow-up.
-Recording a decision does not authorize publication. Publishing is a separate,
-explicitly approved step (`50_publication_plan.md`) and includes only findings
-whose decision is `accept`; DR edits are never performed.
+Only after all required findings are verified, reconciled, and decided, render
+`review_comments.md` with findings whose decision is `accept`. This local
+deliverable is generated automatically; it is not published to Confluence.
+DR edits are never performed.

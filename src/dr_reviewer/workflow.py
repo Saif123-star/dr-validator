@@ -22,6 +22,7 @@ from .storage import save_state as _save_state
 from .storage import sha256_file as _sha256
 from .storage import utc_now as _now
 from .storage import write_json as _write_json
+from .storage import write_text
 
 if TYPE_CHECKING:
     from .sources import FetchedAttachment
@@ -624,6 +625,8 @@ def merge_findings(review_dir: Path, findings_path: Path) -> int:
     state["status"] = "verifying" if merged else "completed"
     state["finding_count"] = len(merged)
     _save_state(review_dir, state)
+    if state["status"] == "completed":
+        render_review_comments(review_dir)
     return len(merged)
 
 
@@ -635,6 +638,27 @@ def build_source_registry(review_dir: Path, output_path: Path | None = None) -> 
     registry_path = output_path or review_dir / "manifest.json"
     _write_json(registry_path, registry)
     return registry_path
+
+
+def export_workbook_evidence(review_dir: Path) -> Path:
+    """Write a read-only text view of captured DR workbooks for review agents."""
+    state = _load_state(review_dir)
+    workbooks: list[str] = []
+    for source in state["sources"]:
+        if source["type"] not in {"dr_page", "attachment"}:
+            continue
+        if Path(source["snapshot_path"]).suffix.casefold() != ".xlsx":
+            continue
+        text = _source_text(review_dir, source)
+        workbooks.append(f"Source: {source['source_id']} ({source['filename']})\n{text}")
+    output = review_dir / "workbook_evidence.txt"
+    content = (
+        "\n\n".join(workbooks) + "\n"
+        if workbooks
+        else "No captured DR .xlsx workbooks. Check the manifest for unavailable formats.\n"
+    )
+    write_text(output, content)
+    return output
 
 
 def _advance_after_verification(
@@ -714,6 +738,8 @@ def import_verifications(review_dir: Path, verification_path: Path) -> int:
     _advance_after_verification(state, findings)
     _write_json(review_dir / "findings.json", findings_payload)
     _save_state(review_dir, state)
+    if state["status"] == "completed":
+        render_review_comments(review_dir)
     return len(values)
 
 
@@ -786,6 +812,8 @@ def import_reconciliations(review_dir: Path, reconciliation_path: Path) -> int:
     _advance_after_verification(state, findings)
     _write_json(review_dir / "findings.json", payload)
     _save_state(review_dir, state)
+    if state["status"] == "completed":
+        render_review_comments(review_dir)
     return len(values)
 
 
@@ -844,6 +872,8 @@ def record_decision(
     state = _load_state(review_dir)
     _refresh_completion(state, findings)
     _save_state(review_dir, state)
+    if state["status"] == "completed":
+        render_review_comments(review_dir)
 
 
 def import_function_map(review_dir: Path, function_map_path: Path) -> int:
@@ -910,18 +940,6 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
         lines.append(
             f"| `{source['source_id']}` | {source['type']} | {source['filename']} "
             f"| `{source['sha256']}` | {source['text_extraction']} |"
-        )
-    publication = state.get("publication")
-    if publication:
-        lines.extend(
-            [
-                "",
-                "## Publication",
-                "",
-                f"- Plan SHA-256: `{publication.get('plan_sha256') or 'not planned'}`",
-                f"- Approved by: {publication.get('approved_by') or 'not approved'}",
-                f"- Review page: {publication.get('page_url') or 'not published'}",
-            ]
         )
     if function_map:
         lines.extend(["", "## Function map", ""])
@@ -1016,6 +1034,102 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
     return report_path
 
 
+def render_review_comments(review_dir: Path, output_path: Path | None = None) -> Path:
+    """Write accepted findings as a local Markdown deliverable after completion."""
+    state = _load_state(review_dir)
+    if state["status"] != "completed":
+        raise ValueError(
+            "Review comments can only be generated after the review is completed"
+        )
+
+    findings = _read_json(review_dir / "findings.json").get("findings", [])
+    accepted = [
+        finding
+        for finding in findings
+        if (finding.get("decision") or {}).get("decision") == "accept"
+    ]
+    report_path = output_path or review_dir / "review_comments.md"
+    lines = [
+        f"# Accepted DR review comments: {state['function_key']} / {state['review_id']}",
+        "",
+        f"- Scope: {state['scope']}",
+        f"- Tracks: {', '.join(state['tracks'])}",
+        f"- DR page/version: {state.get('dr_page_id') or 'local'} / "
+        f"{state.get('dr_version') or 'not supplied'}",
+        f"- BR page/version: {state.get('br_page_id') or 'local'} / "
+        f"{state.get('br_version') or 'not supplied'}",
+        f"- Completed: {state['updated_at']}",
+        f"- Accepted comments: {len(accepted)}",
+        "",
+        "This local file contains only findings explicitly accepted by the "
+        "review decision-maker. It does not modify or publish to Confluence.",
+        "",
+    ]
+    if not accepted:
+        lines.append("No findings were accepted for the review.")
+
+    for finding in accepted:
+        decision = finding["decision"]
+        verification = finding.get("verification") or {}
+        lines.extend(
+            [
+                f"## {finding['finding_id']}: {finding['title']}",
+                "",
+                f"- Severity: {finding['severity']}",
+                f"- Track(s): {', '.join(finding.get('originating_tracks') or [finding['track']])}",
+                f"- Verification: {verification.get('verdict') or 'not recorded'}",
+                f"- Decision owner: {decision['owner']}",
+                f"- Decision recorded: {decision['timestamp']}",
+                "",
+                "### Finding",
+                "",
+                finding["summary"],
+                "",
+                "### Impact",
+                "",
+                finding["impact"],
+                "",
+                "### Recommended DR change",
+                "",
+                finding["recommendation"],
+                "",
+                "### Evidence",
+                "",
+            ]
+        )
+        for evidence in finding["evidence"]:
+            quote_lines = evidence["quote"].splitlines() or [""]
+            lines.append(
+                f"- Source `{evidence['source_id']}`, {evidence['locator']}:"
+            )
+            lines.extend(f"  > {line}" for line in quote_lines)
+        if verification.get("rationale"):
+            lines.extend(
+                ["", "### Independent verification", "", verification["rationale"]]
+            )
+        reconciliation = finding.get("reconciliation")
+        if reconciliation:
+            lines.extend(
+                [
+                    "",
+                    "### Reconciliation",
+                    "",
+                    reconciliation.get("rationale") or "Resolved; no rationale recorded.",
+                ]
+            )
+        if decision.get("rationale"):
+            lines.extend(["", "### Decision rationale", "", decision["rationale"]])
+        if decision.get("intended_action"):
+            lines.extend(
+                ["", "### Intended follow-up", "", decision["intended_action"]]
+            )
+        lines.append("")
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return report_path
+
+
 def get_status(review_dir: Path) -> dict[str, Any]:
     state = _load_state(review_dir)
     findings = _read_json(review_dir / "findings.json").get("findings", [])
@@ -1035,6 +1149,8 @@ def get_status(review_dir: Path) -> dict[str, Any]:
         "needs_reconciliation": sum(
             finding.get("reconciliation_required", False) for finding in findings
         ),
-        "publication": state.get("publication"),
+        "review_comments": str((review_dir / "review_comments.md").resolve())
+        if (review_dir / "review_comments.md").is_file()
+        else None,
         "review_dir": str(review_dir.resolve()),
     }

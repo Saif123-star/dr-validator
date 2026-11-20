@@ -6,7 +6,7 @@ Produce a traceable, repeatable review of an existing DR against its BR and
 supplied attachments. The orchestrator coordinates specialist work; it does
 not perform the review. Review work is read-only with respect to source
 documents and external systems. The only external write is one new
-human-approved Confluence review page (Phase 2).
+local Markdown file of human-accepted review comments.
 
 ## Baseline and evidence
 
@@ -40,21 +40,21 @@ human-approved Confluence review page (Phase 2).
 7. **Decide:** present findings and options to the human. Decisions require
    owner, timestamp, and rationale when provided.
 8. **Report:** render a local review report. Never edit the DR.
-9. **Publish (optional):** follow `50_publication_plan.md`. Build the plan,
-   obtain approval in the user's own words, publish through the gated command,
-   and verify the page.
+9. **Deliver:** automatically render `review_comments.md` in the review
+   directory after completion. Include only findings whose recorded human
+   decision is `accept`; preserve source citations and verification results.
 
 ## Completion
 
 Do not describe a review as complete if required tracks, verification,
 reconciliation, or decisions remain pending. A review with no findings may be
 completed after the selected checks finish and the empty result is recorded.
-Do not describe a publication as complete until `publish-verify` succeeds.
+Do not describe a review as complete until its local reports have been written.
 
 ## Limits
 
 Confluence pages are fetched once at initialization into the snapshot; review
-tracks never read live pages. Publication creates one new child page of the
-DR containing accepted findings only. The workflow does not add inline or
-footer comments, edit the DR, touch Jira, retrieve design files, or run delta
-reviews. Report missing capabilities instead of implying they were checked.
+tracks never read live pages. Confluence remains read-only. The workflow does
+not add comments or pages, edit the DR, touch Jira, retrieve design files, or
+run delta reviews. Report missing capabilities instead of implying they were
+checked.

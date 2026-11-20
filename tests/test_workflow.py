@@ -4,15 +4,18 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from zipfile import ZipFile
 
 from dr_reviewer.workflow import (
     build_source_registry,
+    export_workbook_evidence,
     import_findings,
     import_reconciliations,
     import_verifications,
     initialize_review,
     record_decision,
     render_report,
+    render_review_comments,
 )
 
 
@@ -40,6 +43,54 @@ class ReviewWorkflowTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def test_workbook_evidence_preserves_sheet_and_cell_locations(self) -> None:
+        attachments = self.root / "attachments"
+        attachments.mkdir()
+        workbook = attachments / "spec.xlsx"
+        sheets = {"Item Description": 50, "API Mapping": 20}
+        with ZipFile(workbook, "w") as archive:
+            archive.writestr(
+                "xl/workbook.xml",
+                '<workbook xmlns:r="urn:rel"><sheets>'
+                + "".join(
+                    f'<sheet name="{name}" r:id="rId{i}"/>'
+                    for i, name in enumerate(sheets, 1)
+                )
+                + "</sheets></workbook>",
+            )
+            archive.writestr(
+                "xl/_rels/workbook.xml.rels",
+                "<Relationships>"
+                + "".join(
+                    f'<Relationship Id="rId{i}" Target="worksheets/sheet{i}.xml"/>'
+                    for i in range(1, len(sheets) + 1)
+                )
+                + "</Relationships>",
+            )
+            for i, length in enumerate(sheets.values(), 1):
+                archive.writestr(
+                    f"xl/worksheets/sheet{i}.xml",
+                    '<worksheet><sheetData><row r="2">'
+                    '<c r="A2" t="inlineStr"><is><t>Customer name</t></is></c>'
+                    f'<c r="B2"><v>{length}</v></c>'
+                    "</row></sheetData></worksheet>",
+                )
+        review = initialize_review(
+            "FN001", self.dr, self.br, runs_dir=self.root / "runs",
+            attachments_dir=attachments,
+        )
+        output = export_workbook_evidence(review)
+        text = output.read_text(encoding="utf-8")
+        self.assertIn("Source: SRC-ATT-0001 (spec.xlsx)", text)
+        for name, length in sheets.items():
+            self.assertIn(f"Sheet: {name}\nA2=Customer name | B2={length}", text)
+
+        snapshot = review / "sources" / "SRC-ATT-0001" / workbook.name
+        snapshot.write_bytes(b"modified")
+        with self.assertRaisesRegex(ValueError, "Source snapshot changed"):
+            export_workbook_evidence(review)
+        self.assertEqual(output.read_text(encoding="utf-8"), text)
 
     def _finding(self, track: str, severity: str = "medium") -> dict[str, object]:
         return {
@@ -252,6 +303,61 @@ class ReviewWorkflowTests(unittest.TestCase):
         report = render_report(self.review_dir).read_text(encoding="utf-8")
         self.assertIn("Status: **completed**", report)
         self.assertIn("No findings have been imported.", report)
+        comments = (self.review_dir / "review_comments.md").read_text(encoding="utf-8")
+        self.assertIn("No findings were accepted", comments)
+
+    def test_writes_only_human_accepted_findings_to_comments_file(self) -> None:
+        accepted_finding = self._finding("br_traceability")
+        accepted_finding["rule_id"] = "DR-REQ-ACCEPT"
+        accepted_finding["affected_sections"] = ["Accepted section"]
+        rejected_finding = self._finding("br_traceability")
+        rejected_finding["rule_id"] = "DR-REQ-REJECT"
+        rejected_finding["title"] = "Rejected finding must not appear"
+        rejected_finding["affected_sections"] = ["Rejected section"]
+        findings_path = self._write_json(
+            "accepted-findings.json",
+            {"findings": [accepted_finding, rejected_finding]},
+        )
+        self.assertEqual(import_findings(self.review_dir, findings_path), 2)
+        findings = json.loads((self.review_dir / "findings.json").read_text())["findings"]
+        verification_path = self._write_json(
+            "accepted-verification.json",
+            {
+                "verifications": [
+                    {
+                        "finding_id": finding["finding_id"],
+                        "verdict": "verified",
+                        "rationale": "The cited requirement is present in the snapshot.",
+                    }
+                    for finding in findings
+                ]
+            },
+        )
+        import_verifications(self.review_dir, verification_path)
+        record_decision(
+            self.review_dir,
+            findings[0]["finding_id"],
+            "accept",
+            "Reviewer",
+            rationale="The recommendation is appropriate.",
+        )
+        record_decision(
+            self.review_dir,
+            findings[1]["finding_id"],
+            "reject",
+            "Reviewer",
+        )
+
+        comments_path = self.review_dir / "review_comments.md"
+        self.assertTrue(comments_path.is_file())
+        comments = comments_path.read_text(encoding="utf-8")
+        self.assertIn(findings[0]["finding_id"], comments)
+        self.assertNotIn(findings[1]["finding_id"], comments)
+        self.assertNotIn("Rejected finding must not appear", comments)
+        self.assertIn("Decision owner: Reviewer", comments)
+        self.assertIn("The account number is required.", comments)
+        self.assertIn("The cited requirement is present", comments)
+        self.assertEqual(render_review_comments(self.review_dir), comments_path)
 
     def test_requires_must_change_for_high_severity(self) -> None:
         finding = self._finding("br_traceability", "high")

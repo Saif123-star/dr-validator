@@ -13,7 +13,7 @@ source_types:
     applicable_tracks: [br_traceability, technical_mapping]
   attachment:
     authoritative_for: [attachment_content]
-    applicable_tracks: [document_integrity, ui_ux_context, technical_mapping]
+    applicable_tracks: [document_integrity, internal_consistency, ui_ux_context, technical_mapping]
   figma_export:
     authoritative_for: [approved_design]
     applicable_tracks: [ui_ux_context]

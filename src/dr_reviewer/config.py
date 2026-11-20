@@ -38,17 +38,6 @@ if not isinstance(PIPELINE_CONFIG.get("stages"), dict):
 for _key in ("request_timeout_seconds", "max_response_bytes", "max_attachment_bytes"):
     if not isinstance(CONFLUENCE_CONFIG.get(_key), int) or CONFLUENCE_CONFIG[_key] <= 0:
         raise ValueError(f"confluence.yaml must define a positive integer {_key}")
-_review_page = CONFLUENCE_CONFIG.get("review_page")
-if (
-    not isinstance(_review_page, dict)
-    or not isinstance(_review_page.get("title_template"), str)
-    or not isinstance(_review_page.get("include_decisions"), list)
-    or not _review_page["include_decisions"]
-):
-    raise ValueError(
-        "confluence.yaml must define review_page.title_template and "
-        "a non-empty review_page.include_decisions list"
-    )
 
 
 def load_env_file(path: Path) -> dict[str, str]:

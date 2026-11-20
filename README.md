@@ -1,18 +1,19 @@
 # DR Reviewer
 
-DR Reviewer implements Phases 1 and 2 of the implementation plan. It creates an
+DR Reviewer implements an orchestrated design-requirement review. It creates an
 immutable evidence snapshot for a DR, its BR, and attachments (from local files
 or read-only from Confluence Cloud); produces a shared review brief; validates
 and merges evidence-backed findings; imports independent verification results;
-records human decisions; renders a review report; and, after explicit human
-approval, publishes one new Confluence review page listing accepted findings.
+records human decisions; and automatically writes a detailed local review
+report plus `review_comments.md` containing only findings the user accepted.
 
 The CLI handles snapshots, deterministic validation/merging,
 verification-result import, reconciliation-result import, decisions,
-reporting, and gated publication. The `.github/agents` and `prompts_review`
+and local report generation. The `.github/agents` and `prompts_review`
 files define specialist instructions for VS Code; the CLI does not
 autonomously launch agents. Semantic verification remains independent human
-or agent work. The DR is never edited, and no comments are added.
+or agent work. Confluence is read-only: the DR is never edited and review
+results are never written back to Confluence.
 
 ## Requirements
 
@@ -30,7 +31,7 @@ use the `dr-review` command from any directory.
 - `config/review/` — pipeline stages, severity policy, evidence authority, and
   Confluence settings (`confluence.yaml`)
 - `prompts_review/` — shared workflow, track prompts, merge, verify, reconcile,
-  decision-package, and publication-plan instructions
+  decision-package, and local review-comments instructions
 - `schemas/review/` — JSON Schemas for state, sources, findings, verification,
   and decisions
 - `scripts/review/` — command-line entry points for the workflow
@@ -50,9 +51,16 @@ The orchestrator uses the saved status to resume without re-fetching the pages.
 It invokes the applicable specialists, validates and merges their findings,
 invokes the verifier and (only when needed) reconciler, and saves their outputs.
 You do not run the individual prompts, agents, or import commands yourself.
-You provide finding decisions and, if you request publication, separate
-approval after inspecting the plan. VS Code may also prompt you to allow
-workflow tool calls.
+Full reviews check the DR against the BR and audit the DR itself: declared
+field lengths for the same field, references to every Item Description
+component, API contracts across worksheets, and cross-section contradictions.
+The orchestrator prepares a hash-checked `.xlsx` evidence view for the
+reviewers and reports any coverage limits. For a targeted review, select
+`technical_mapping` and `internal_consistency` to include these checks.
+You provide finding decisions. After the last decision, the orchestrator
+creates `review_report.md` and `review_comments.md` in the review folder. The
+latter contains accepted findings only; it is a local file, not a Confluence
+page. VS Code may prompt you to allow workflow tool calls.
 
 If you use VS Code's Local harness, the `/dr-review` prompt also accepts
 the same inputs directly in chat. The Python CLI alone does not invoke agents.
@@ -79,8 +87,7 @@ acquisition is part of initialization so the baseline is created atomically.
 The installed equivalent is `python -m dr_reviewer init`.
 
 Page IDs, versions, URLs, and reviewer identity are optional for local-only
-sources and are stored as review provenance when supplied. A DR page ID and
-version are required later if you want to publish a review page.
+sources and are stored as review provenance when supplied.
 
 ### Capture from Confluence (read-only)
 
@@ -206,38 +213,27 @@ findings outside that scope, findings without in-snapshot quotes, and human
 decisions until every finding has been independently verified and all flagged
 conflicts have been reconciled.
 
-## Publish a review page (Phase 2)
+## Local review deliverables
 
-Once the review status is `completed`, publish accepted findings as one new
-child page of the DR page:
+When the review reaches `completed`, the orchestrator automatically generates:
+
+- `review_report.md` — the full review record, including findings, evidence,
+  verification, reconciliation, and human decisions.
+- `review_comments.md` — only findings with the human decision `accept`,
+  including recommended DR changes and source citations. If no findings are
+  accepted, the file explicitly says so.
+
+Both files remain under `runs/<FunctionKey>/reviews/<ReviewId>/`. To regenerate
+the accepted-comments file after completion:
 
 ```powershell
-$review = ".\runs\WSMB010104\reviews\R001"
-python scripts/review/build_publish_plan.py $review      # writes publication/plan.md + preview
-python scripts/review/approve_publish_plan.py $review `
-  --approved-by "Reviewer Name" --statement "Approved: publish the R001 review page"
-python scripts/review/publish_dr_review.py $review       # preflight, gate, create, verify
-python scripts/review/check_review_publication.py $review
+python -m dr_reviewer review-comments .\runs\WSMB010104\reviews\R001
 ```
 
-- `publish-plan` writes nothing to Confluence. It lists included findings
-  (decision `accept`, configurable in `confluence.yaml`) and excluded ones.
-- `publish-approve` records the approver's own words and locks the plan hash
-  in `publication/approved.json`. Rebuilding the plan clears the approval.
-- `publish` first checks that the DR is still at the reviewed version, then
-  re-checks the plan, page body, findings, and approval hashes before writing.
-  Each action is read back and recorded in `publication/publication_log.json`.
-- If publishing fails, the status becomes `publication_failed`. Rerun
-  `publish` to retry: it looks for a page it already created (same title,
-  parent, and publication marker), adopts it instead of duplicating it, and
-  resumes. A different page with the same title is never overwritten.
-
-## Current boundary
-
-Publication creates one review page only. The workflow does not add inline or
-footer comments, edit or patch the DR, update Jira, retrieve design files,
-invoke agents automatically, or run re-review deltas. Evidence citation checks
-are deterministic; they do not replace semantic verification.
+Confluence is read-only and used only to capture source pages and attachments.
+The workflow never creates Confluence pages or comments and never edits the DR.
+Evidence citation checks are deterministic; they do not replace semantic
+verification.
 
 ## Tests
 

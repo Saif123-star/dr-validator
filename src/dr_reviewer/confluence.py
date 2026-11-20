@@ -1,4 +1,4 @@
-"""Minimal Confluence Cloud REST v2 client used for source capture and publication."""
+"""Read-only Confluence Cloud REST v2 client for source capture."""
 
 from __future__ import annotations
 
@@ -152,19 +152,13 @@ class ConfluenceAttachment:
 
 
 class ConfluenceGateway(Protocol):
-    """Operations the reviewer needs; implemented by ``ConfluenceClient`` and test fakes."""
+    """Read-only operations required for Confluence source capture."""
 
     def get_page(self, page_id: str, *, include_body: bool = True) -> ConfluencePage: ...
 
     def list_attachments(self, page_id: str) -> list[ConfluenceAttachment]: ...
 
     def download_attachment(self, attachment: ConfluenceAttachment, destination: Path) -> str: ...
-
-    def find_pages_by_title(self, space_id: str, title: str) -> list[ConfluencePage]: ...
-
-    def create_page(
-        self, *, space_id: str, parent_id: str, title: str, storage_body: str
-    ) -> ConfluencePage: ...
 
 
 class _SafeRedirectHandler(request.HTTPRedirectHandler):
@@ -214,7 +208,7 @@ class ConfluenceClient:
     def get_page(self, page_id: str, *, include_body: bool = True) -> ConfluencePage:
         page_id = require_numeric_id(page_id, "Page ID")
         query = {"body-format": "storage"} if include_body else None
-        return self._page(self._request_json("GET", self._url(f"/api/v2/pages/{page_id}", query)))
+        return self._page(self._request_json(self._url(f"/api/v2/pages/{page_id}", query)))
 
     def list_attachments(self, page_id: str) -> list[ConfluenceAttachment]:
         page_id = require_numeric_id(page_id, "Page ID")
@@ -225,7 +219,7 @@ class ConfluenceClient:
             if url in visited:
                 raise ConfluenceError("Confluence attachment pagination repeated a page")
             visited.add(url)
-            payload = self._request_json("GET", url)
+            payload = self._request_json(url)
             attachments.extend(self._attachment(item) for item in payload.get("results", []))
             next_link = (payload.get("_links") or {}).get("next")
             url = self._url(next_link) if isinstance(next_link, str) and next_link else None
@@ -239,7 +233,7 @@ class ConfluenceClient:
             )
         url = self._url(attachment.download_link)
         written = 0
-        with self._open("GET", url, accept="*/*") as response, destination.open("xb") as handle:
+        with self._open(url, accept="*/*") as response, destination.open("xb") as handle:
             while chunk := response.read(1024 * 1024):
                 written += len(chunk)
                 if written > limit:
@@ -248,24 +242,6 @@ class ConfluenceClient:
                     )
                 handle.write(chunk)
         return url
-
-    def find_pages_by_title(self, space_id: str, title: str) -> list[ConfluencePage]:
-        space_id = require_numeric_id(space_id, "Space ID")
-        query = {"space-id": space_id, "title": title, "status": "current", "limit": "25"}
-        payload = self._request_json("GET", self._url("/api/v2/pages", query))
-        return [self._page(item) for item in payload.get("results", [])]
-
-    def create_page(
-        self, *, space_id: str, parent_id: str, title: str, storage_body: str
-    ) -> ConfluencePage:
-        payload = {
-            "spaceId": require_numeric_id(space_id, "Space ID"),
-            "status": "current",
-            "title": title,
-            "parentId": require_numeric_id(parent_id, "Parent page ID"),
-            "body": {"representation": "storage", "value": storage_body},
-        }
-        return self._page(self._request_json("POST", self._url("/api/v2/pages"), payload))
 
     def _url(self, link: str, query: Mapping[str, str] | None = None) -> str:
         site = parse.urlsplit(self._settings.base_url)
@@ -284,38 +260,26 @@ class ConfluenceClient:
             url = f"{url}{'&' if '?' in url else '?'}{parse.urlencode(query)}"
         return url
 
-    def _open(
-        self,
-        method: str,
-        url: str,
-        payload: Mapping[str, Any] | None = None,
-        accept: str = "application/json",
-    ) -> Any:
+    def _open(self, url: str, accept: str = "application/json") -> Any:
         headers = {"Authorization": self._authorization, "Accept": accept}
-        data = None
-        if payload is not None:
-            data = json.dumps(payload).encode("utf-8")
-            headers["Content-Type"] = "application/json"
-        outgoing = request.Request(url, data=data, headers=headers, method=method)
+        outgoing = request.Request(url, headers=headers)
         location = parse.urlsplit(url).path
         try:
             return self._opener.open(outgoing, timeout=self._timeout)
         except error.HTTPError as exc:
             raise ConfluenceError(
-                f"Confluence {method} {location} failed with HTTP {exc.code}: "
+                f"Confluence GET {location} failed with HTTP {exc.code}: "
                 f"{_error_detail(exc)}",
                 status=exc.code,
             ) from exc
         except OSError as exc:
             reason = getattr(exc, "reason", exc)
             raise ConfluenceError(
-                f"Unable to reach Confluence for {method} {location}: {reason}"
+                f"Unable to reach Confluence for GET {location}: {reason}"
             ) from exc
 
-    def _request_json(
-        self, method: str, url: str, payload: Mapping[str, Any] | None = None
-    ) -> dict[str, Any]:
-        with self._open(method, url, payload) as response:
+    def _request_json(self, url: str) -> dict[str, Any]:
+        with self._open(url) as response:
             raw = response.read(self._max_response_bytes + 1)
         if len(raw) > self._max_response_bytes:
             raise ConfluenceError("Confluence response exceeded the configured size limit")

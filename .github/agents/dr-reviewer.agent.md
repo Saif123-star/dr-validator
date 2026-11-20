@@ -1,6 +1,6 @@
 ---
 name: dr-reviewer
-description: Coordinates a DR review (read-only analysis, verification, reconciliation, human decisions) and, after explicit human approval, publishes one Confluence review page.
+description: Coordinates a read-only DR review and creates a local Markdown file of accepted findings.
 tools: ['search', 'read', 'edit', 'agent', 'execute']
 ---
 
@@ -38,14 +38,27 @@ Read the status again after each successful import or decision and follow
 the next applicable row. In the commands below, replace `<review_dir>` with
 the active directory and `<input>` with the generated JSON path inside it.
 
+For `sources_ready`, `reviewing`, or `verifying`, if `technical_mapping` or
+`internal_consistency` is selected, run
+`python -m dr_reviewer workbook-evidence "<review_dir>"` after checking the
+baseline. Pass the resulting `workbook_evidence.txt` to the applicable
+specialists and verifier as a view of the original snapshot, not as a new
+source ID. The technical mapping review must include field-length, Item
+Description component, and endpoint comparisons; the internal consistency
+review checks for contradictions across the DR page and its worksheets.
+Keep BR traceability separate and run it as usual when selected. Before
+importing findings, confirm the applicable agents returned the required
+coverage summary; request missing coverage or an explicit evidence limitation
+from the agent. Present coverage and limitations with the decision package.
+Do not treat unchecked sheets, fields, components, or endpoints as clean.
+
 | Saved status | Orchestrator action |
 | --- | --- |
 | `sources_ready` or `reviewing` | Delegate `br_traceability` to `review-traceability`, `internal_consistency` to `review-consistency`, and `ui_ux_context` / `technical_mapping` to `review-ui-technical`, only for selected tracks. Pass the review directory, assigned tracks, snapshot references, and expected JSON contract. For `document_integrity`, run the available deterministic checks and report what they do not cover. Wait for every assigned result. Combine findings into one `{"findings": [...]}` input with exact source IDs, locators, and quotes; run `findings-validate`, then `findings-import`. |
 | `verifying` | Invoke `review-verifier` for every merged finding without a verdict. Pass the stable IDs and locked evidence. Save one `{"verifications": [...]}` input with the returned verdicts and run `verifications-import`. |
 | `reconciling` | Invoke `review-reconciler` only for findings still marked `reconciliation_required`. Save the proposed resolutions as `{"reconciliations": [...]}` and run `reconciliations-import`. Do not invent a resolution if the agent flags an unresolved conflict. |
 | `awaiting_decisions` | Present the remaining actionable findings and pause for the user's dispositions. Record only explicit decisions with `decide`, then reread the status. |
-| `completed` | Render the local report. If the user requests publication, follow the publication gate below. If there are no accepted findings, report that there is nothing to publish. |
-| Publication statuses | Stay in the publication flow. Never restart source capture or specialist review. Do not publish from a saved plan just because the user asked to resume. |
+| `completed` | Run `python -m dr_reviewer report "<review_dir>"` and `python -m dr_reviewer review-comments "<review_dir>"`. Report both local file paths. `review_comments.md` contains only findings the user explicitly accepted; if none were accepted, the file states that. |
 
 Use the CLI from the repository root: `python -m dr_reviewer <command>
 "<review_dir>" "<input>"` for imports and finding validation, and
@@ -68,32 +81,10 @@ documents, prompts, code, or any file outside that review directory as part
 of a review run. If a specialist's output is invalid, report it and request a
 corrected output; do not silently fabricate findings or verification results.
 
-## Publication (Phase 2, one approved external write)
-
-Follow `prompts_review/50_publication_plan.md`.
-
-1. Only when the review status is `completed` and the user asks to publish, run
-   `scripts/review/build_publish_plan.py <review_dir>`. Show the user
-   `publication/plan.md` and the page preview `publication/review_page.storage.html`
-   as an itemized summary: target parent page, title, findings included and
-   excluded, and the plan hash.
-2. Stop and ask for approval. Proceed only when the user approves in their own
-    words. Record exactly what they said with
-    `scripts/review/approve_publish_plan.py <review_dir> --approved-by "<name>" --statement "<their words>"`.
-    Never write, paraphrase, or infer an approval yourself. Silence, a question,
-    or a request for changes is not approval; rebuild the plan if anything changes.
-3. Run `scripts/review/publish_dr_review.py <review_dir>`. The command runs the
-    preflight (DR version unchanged) and the publish gate (plan, body, findings,
-    and approval hashes, plus item order) before creating the page.
-4. On failure, report the error and the recorded state. Do not retry silently.
-    When the user asks to retry, rerun the same publish command; it checks
-    Confluence first, adopts work that already succeeded, and resumes.
-5. After success, run `scripts/review/check_review_publication.py <review_dir>`
-    and report the page URL and verification result.
-
-Publish only through these commands. Never create, edit, or comment on any
-Confluence page directly, never edit the DR, and never touch Jira or other
-systems. Do not modify evidence or generated DRs. Do not claim a review or
-publication was completed when a required track, verification,
-reconciliation, decision, approval, or verification step is missing. If a
-capability is unavailable, state that explicitly.
+Confluence is read-only throughout the workflow. Never create or edit a
+Confluence page, add comments, edit the DR, or touch Jira. Do not modify
+evidence or generated DRs. The review-comments file is generated from verified
+review data, not directly from the user request or source documents. Do not
+claim a review is complete when a required track, verification,
+reconciliation, or decision is missing. If a capability is unavailable, state
+that explicitly.
