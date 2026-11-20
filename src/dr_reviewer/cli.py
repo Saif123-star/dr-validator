@@ -48,8 +48,8 @@ def _parser() -> argparse.ArgumentParser:
         help="Snapshot a DR, BR, and attachments from local files or Confluence (read-only)",
     )
     init.add_argument("--function-key", required=True)
-    init.add_argument("--dr", type=Path, help="Local DR file; omit to fetch --dr-page-id")
-    init.add_argument("--br", type=Path, help="Local BR file; omit to fetch --br-page-id")
+    init.add_argument("--dr", type=Path, help="Local DR file")
+    init.add_argument("--br", type=Path, help="Local BR file")
     init.add_argument("--attachments", type=Path)
     init.add_argument("--runs-dir", type=Path, default=Path("runs"))
     init.add_argument("--scope", choices=("full", "targeted"), default="full")
@@ -59,10 +59,10 @@ def _parser() -> argparse.ArgumentParser:
         "--dr-version",
         help="DR version; required with a local --dr, optional pin for a fetched DR",
     )
-    init.add_argument("--dr-url")
+    init.add_argument("--dr-url", help="Confluence DR page URL (instead of --dr or --dr-page-id)")
     init.add_argument("--br-page-id")
     init.add_argument("--br-version")
-    init.add_argument("--br-url")
+    init.add_argument("--br-url", help="Confluence BR page URL (instead of --br or --br-page-id)")
     init.add_argument("--reviewer")
     init.add_argument("--env-file", type=Path, help="Confluence settings file (default: .env)")
     init.add_argument(

@@ -36,11 +36,28 @@ use the `dr-review` command from any directory.
 - `scripts/review/` — command-line entry points for the workflow
 - `src/dr_reviewer/` — package implementation behind both scripts and CLI
 
-Open `.github/prompts/dr-review.prompt.md` in VS Code to start the
-`dr-reviewer` coordination workflow. The prompt requires an existing local
-snapshot; use the initialization script below to create it first.
+### Start or resume in VS Code
 
-## Start a review
+Select **`dr-reviewer`** in the agent picker in VS Code Copilot Chat and send
+one message:
+
+```text
+Start a full review. Function Key: WSMB010104; DR URL: <DR URL>; BR URL: <BR URL>
+```
+
+For an existing snapshot, send `Resume .\runs\WSMB010104\reviews\R001`.
+The orchestrator uses the saved status to resume without re-fetching the pages.
+It invokes the applicable specialists, validates and merges their findings,
+invokes the verifier and (only when needed) reconciler, and saves their outputs.
+You do not run the individual prompts, agents, or import commands yourself.
+You provide finding decisions and, if you request publication, separate
+approval after inspecting the plan. VS Code may also prompt you to allow
+workflow tool calls.
+
+If you use VS Code's Local harness, the `/dr-review` prompt also accepts
+the same inputs directly in chat. The Python CLI alone does not invoke agents.
+
+## Manual CLI reference
 
 ```powershell
 python scripts/review/init_dr_review.py `
@@ -83,6 +100,15 @@ current version, and every DR page attachment is downloaded as an attachment
 source. Pass `--dr-version`/`--br-version` to pin a version; capture fails if
 the page has moved on. Local and Confluence sources can be mixed, for example
 a Confluence DR with a local `--br` file. Review tracks only read the snapshot.
+
+You can also pass the full Confluence page URLs:
+
+```powershell
+python scripts/review/init_dr_review.py --function-key WSMB010104 `
+  --dr-url "https://<site>.atlassian.net/wiki/spaces/ABC/pages/1819377813/Design+Requirements" `
+  --br-url "https://<site>.atlassian.net/wiki/spaces/ABC/pages/1818689539/Business+Requirements"
+```
+
 Repeat `--context-source TYPE=PATH` to register local workshop-decision,
 design-export, or comment-export files under their configured authority. These
 are imported local evidence; the reviewer does not retrieve them remotely.

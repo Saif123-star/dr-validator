@@ -12,6 +12,7 @@ from dr_reviewer.confluence import (
     ConfluenceError,
     ConfluenceSettings,
     normalize_base_url,
+    page_id_from_url,
 )
 from dr_reviewer.sources import PageSource, initialize_review_from_sources, safe_filename
 from dr_reviewer.storage import read_json
@@ -25,6 +26,7 @@ class _RecordingOpener:
         self.requests: list[object] = []
 
     def open(self, outgoing, timeout):  # type: ignore[no-untyped-def]
+        _ = timeout
         self.requests.append(outgoing)
         return io.BytesIO(json.dumps(self.responses.pop(0)).encode("utf-8"))
 
@@ -65,6 +67,30 @@ class ConfluenceSettingsTests(unittest.TestCase):
                       "https://user@acme.atlassian.net"):
             with self.subTest(value=value), self.assertRaises(ConfluenceError):
                 normalize_base_url(value)
+
+    def test_extracts_page_id_only_from_expected_site_and_page_urls(self) -> None:
+        base_url = "https://acme.atlassian.net"
+        self.assertEqual(
+            page_id_from_url(
+                "https://acme.atlassian.net/wiki/spaces/ABC/pages/12345/Page+Title",
+                base_url,
+            ),
+            "12345",
+        )
+        self.assertEqual(
+            page_id_from_url(
+                "https://acme.atlassian.net/wiki/pages/viewpage.action?pageId=456",
+                base_url,
+            ),
+            "456",
+        )
+        for value in (
+            "http://acme.atlassian.net/wiki/spaces/ABC/pages/12345",
+            "https://evil.test/wiki/spaces/ABC/pages/12345",
+            "https://acme.atlassian.net/wiki/spaces/ABC/pages/not-an-id",
+        ):
+            with self.subTest(value=value), self.assertRaises(ConfluenceError):
+                page_id_from_url(value, base_url)
 
 
 class ConfluenceClientTests(unittest.TestCase):

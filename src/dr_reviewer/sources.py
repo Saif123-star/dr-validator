@@ -14,6 +14,7 @@ from .confluence import (
     ConfluenceError,
     ConfluenceGateway,
     ConfluenceSettings,
+    page_id_from_url,
     require_numeric_id,
 )
 from .storage import write_text
@@ -42,8 +43,10 @@ class PageSource:
         return self.path is None
 
     def validate(self, label: str) -> None:
-        if self.path is None and not self.page_id:
-            raise ValueError(f"Provide a local --{label} file or --{label}-page-id")
+        if self.path is None and not self.page_id and not self.url:
+            raise ValueError(
+                f"Provide a local --{label} file, --{label}-page-id, or --{label}-url"
+            )
 
 
 @dataclass(frozen=True)
@@ -139,7 +142,26 @@ def initialize_review_from_sources(
             **review_options,
         )
 
-    gateway = client or ConfluenceClient(ConfluenceSettings.from_environment(env_file))
+    if client is None:
+        settings = ConfluenceSettings.from_environment(env_file)
+        gateway: ConfluenceGateway = ConfluenceClient(settings)
+    else:
+        settings = None
+        gateway = client
+    page_ids: dict[str, str | None] = {}
+    for label, source in (("DR", dr), ("BR", br)):
+        page_id = source.page_id
+        if source.is_remote and source.url:
+            if settings is None:
+                raise ValueError(
+                    f"Resolving a {label} URL with an injected client requires an explicit page ID"
+                )
+            url_page_id = page_id_from_url(source.url, settings.base_url)
+            if page_id and require_numeric_id(page_id, f"{label} page ID") != url_page_id:
+                raise ConfluenceError(f"{label} page ID does not match its URL")
+            page_id = url_page_id
+        page_ids[label] = page_id
+
     workspace = Path(tempfile.mkdtemp(prefix="dr-review-confluence-"))
     try:
         fetcher = ConfluenceSourceFetcher(gateway, workspace)
@@ -147,22 +169,22 @@ def initialize_review_from_sources(
         for label, source in (("DR", dr), ("BR", br)):
             if source.is_remote:
                 path, version, url = fetcher.fetch_page(
-                    source.page_id or "", label, source.version
+                    page_ids[label] or "", label, source.version
                 )
                 resolved[label] = (path, version, source.url or url, "confluence")
             else:
                 resolved[label] = (source.path, source.version, source.url, "local")  # type: ignore[assignment]
-        attachments = fetcher.fetch_attachments(dr.page_id or "") if dr.is_remote else []
+        attachments = fetcher.fetch_attachments(page_ids["DR"] or "") if dr.is_remote else []
         dr_path, dr_version, dr_url, dr_origin = resolved["DR"]
         br_path, br_version, br_url, br_origin = resolved["BR"]
         return initialize_review(
             function_key,
             dr_path,
             br_path,
-            dr_page_id=dr.page_id,
+            dr_page_id=page_ids["DR"],
             dr_version=dr_version,
             dr_url=dr_url,
-            br_page_id=br.page_id,
+            br_page_id=page_ids["BR"],
             br_version=br_version,
             br_url=br_url,
             dr_origin=dr_origin,

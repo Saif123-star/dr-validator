@@ -47,6 +47,40 @@ def normalize_base_url(value: str) -> str:
     return f"https://{parsed.netloc}"
 
 
+def page_id_from_url(value: str, base_url: str) -> str:
+    """Extract a numeric page ID from a URL on the configured Confluence site."""
+    parsed = parse.urlsplit(value.strip())
+    site = parse.urlsplit(normalize_base_url(base_url))
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.casefold() != site.netloc.casefold()
+        or parsed.username
+        or parsed.password
+        or not parsed.path.casefold().startswith("/wiki/")
+        or parsed.fragment
+    ):
+        raise ConfluenceError(
+            "Page URL must be an HTTPS Confluence page URL on the configured site"
+        )
+
+    match = re.match(
+        r"^/wiki/(?:spaces/[^/]+/pages|pages)/([0-9]+)(?:/|$)",
+        parsed.path,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return require_numeric_id(match.group(1), "Page ID")
+
+    query = parse.parse_qs(parsed.query)
+    page_ids = query.get("pageId", [])
+    if parsed.path.casefold().endswith("/viewpage.action") and len(page_ids) == 1:
+        return require_numeric_id(page_ids[0], "Page ID")
+    raise ConfluenceError(
+        "Could not find a page ID in the Confluence URL; expected "
+        "/wiki/spaces/<space>/pages/<id>/... or /wiki/pages/viewpage.action?pageId=<id>"
+    )
+
+
 @dataclass(frozen=True)
 class ConfluenceSettings:
     base_url: str

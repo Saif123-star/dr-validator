@@ -2,20 +2,15 @@
 name: dr-review
 description: Start or resume a DR review, and optionally publish one approved Confluence review page.
 agent: dr-reviewer
+argument-hint: "Function Key, DR URL, BR URL; or an existing review directory"
 ---
 
-Coordinate a DR review using the repository's configured workflow.
+Use the inputs supplied in the chat message to start or resume the review.
+For a new review, take the Function Key and both Confluence page URLs. For an
+existing review, take its directory and resume from its saved status without
+capturing the pages again. Ask only for missing required inputs.
 
-Review directory or Function Key: ${input:review}
-Requested scope (full or targeted): ${input:scope}
-Additional context: ${input:context}
-
-Follow `prompts_review/00_master.md`. Review work is read-only: DR, BR, and
-attachments come only from the captured snapshot in
-`runs/<FunctionKey>/reviews`. If no snapshot exists, explain that a human must
-create it with `scripts/review/init_dr_review.py`, from local files or from
-Confluence page IDs; do not silently create or modify source documents.
-
-The only permitted external write is one new Confluence review page, created
-through `prompts_review/50_publication_plan.md` after the user approves the
-publication plan in their own words.
+Follow the `dr-reviewer` orchestration instructions: invoke the applicable
+subagents and run the review commands yourself. Do not hand stage execution or
+JSON handling back to the user. Pause for finding decisions and separate
+publication approval, or report a blocker if you cannot advance.
