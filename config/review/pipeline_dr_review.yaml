@@ -1,6 +1,8 @@
-name: dr-review-phase-1
-description: Local-first, read-only design-requirement review
-external_writes: false
+name: dr-review
+description: >-
+  Read-only design-requirement review (Phase 1) with optional, human-approved
+  publication of one Confluence review page (Phase 2)
+external_writes: approved_review_page_only
 tracks:
   document_integrity:
     prompt: prompts_review/tracks/10_document_integrity.md
@@ -26,8 +28,14 @@ stages:
   verifying: [reconciling, awaiting_decisions, verification_failed]
   reconciling: [awaiting_decisions, review_failed]
   awaiting_decisions: [completed]
-  completed: []
+  completed: [publication_planned]
+  publication_planned: [publication_planned, publication_approved]
+  publication_approved: [publication_planned, publishing, publication_failed]
+  publishing: [published, publication_failed]
+  publication_failed: [publishing]
+  published: []
 failure_states:
   - source_failed
   - review_failed
   - verification_failed
+  - publication_failed

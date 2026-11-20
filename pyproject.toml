@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dr-reviewer"
-version = "0.1.0"
-description = "Local-first, read-only design-requirement review workflow"
+version = "0.2.0"
+description = "Design-requirement review workflow with human-approved Confluence review-page publication"
 requires-python = ">=3.12"
 dependencies = ["PyYAML>=6.0"]
 

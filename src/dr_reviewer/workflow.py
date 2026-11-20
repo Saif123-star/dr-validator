@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .config import (
     PIPELINE_CONFIG,
@@ -17,6 +16,15 @@ from .config import (
     SOURCE_AUTHORITY_CONFIG,
 )
 from .documents import extract_text, normalize_quote
+from .storage import load_state as _load_state
+from .storage import read_json as _read_json
+from .storage import save_state as _save_state
+from .storage import sha256_file as _sha256
+from .storage import utc_now as _now
+from .storage import write_json as _write_json
+
+if TYPE_CHECKING:
+    from .sources import FetchedAttachment
 
 
 TRACKS = tuple(PIPELINE_CONFIG["tracks"])
@@ -83,46 +91,6 @@ _SOURCE_REGISTRY_SCHEMA = json.loads(
 )
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
-
-
-def _read_json(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Unable to read valid JSON from {path}") from exc
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _require_file(path: Path, label: str) -> Path:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"{label} must be a regular file: {path}")
@@ -151,6 +119,8 @@ def _source_record(
     page_id: str | None = None,
     version: str | None = None,
     url: str | None = None,
+    origin: str = "local",
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_dir = stage / "sources" / source_id
     source_dir.mkdir(parents=True)
@@ -161,6 +131,7 @@ def _source_record(
     return {
         "source_id": source_id,
         "type": source_type,
+        "origin": origin,
         "filename": source_path.name,
         "snapshot_path": snapshot.relative_to(stage).as_posix(),
         "sha256": _sha256(snapshot),
@@ -173,6 +144,7 @@ def _source_record(
         "url": url,
         "authoritative_for": authority.get("authoritative_for", authoritative_for),
         "applicable_tracks": authority.get("applicable_tracks", tracks),
+        **(extra or {}),
     }
 
 
@@ -192,6 +164,9 @@ def initialize_review(
     br_url: str | None = None,
     reviewer: str | None = None,
     context_sources: list[tuple[str, Path]] | None = None,
+    dr_origin: str = "local",
+    br_origin: str = "local",
+    confluence_attachments: Sequence[FetchedAttachment] = (),
 ) -> Path:
     if not _FUNCTION_KEY.fullmatch(function_key):
         raise ValueError("Function Key must be 1-64 letters, digits, underscores, or hyphens")
@@ -223,6 +198,10 @@ def initialize_review(
                 raise ValueError(f"Symbolic links are not allowed in attachments: {item}")
             if item.is_file():
                 attachment_files.append(item.resolve())
+    remote_attachments = [
+        (_require_file(attachment.path, "Confluence attachment"), attachment)
+        for attachment in confluence_attachments
+    ]
     validated_context: list[tuple[str, Path]] = []
     for source_type, source_path in context_sources or []:
         if source_type not in SOURCE_AUTHORITY_CONFIG["source_types"]:
@@ -250,6 +229,7 @@ def initialize_review(
                 page_id=dr_page_id,
                 version=dr_version,
                 url=dr_url,
+                origin=dr_origin,
             ),
             _source_record(
                 stage,
@@ -261,6 +241,7 @@ def initialize_review(
                 page_id=br_page_id,
                 version=br_version,
                 url=br_url,
+                origin=br_origin,
             ),
         ]
         for index, source_path in enumerate(attachment_files, start=1):
@@ -272,6 +253,24 @@ def initialize_review(
                     source_path,
                     ["attachment_content"],
                     ["document_integrity", "ui_ux_context", "technical_mapping"],
+                )
+            )
+        for index, (source_path, attachment) in enumerate(
+            remote_attachments, start=len(attachment_files) + 1
+        ):
+            sources.append(
+                _source_record(
+                    stage,
+                    f"SRC-ATT-{index:04d}",
+                    "attachment",
+                    source_path,
+                    ["attachment_content"],
+                    ["document_integrity", "ui_ux_context", "technical_mapping"],
+                    page_id=attachment.parent_page_id,
+                    version=attachment.version,
+                    url=attachment.url,
+                    origin="confluence",
+                    extra={"attachment_id": attachment.attachment_id},
                 )
             )
         for index, (source_type, source_path) in enumerate(validated_context, start=1):
@@ -326,18 +325,6 @@ def initialize_review(
             shutil.rmtree(stage)
         raise
     return review_dir
-
-
-def _load_state(review_dir: Path) -> dict[str, Any]:
-    state = _read_json(review_dir / "state.json")
-    if not isinstance(state, dict) or state.get("schema_version") != 1:
-        raise ValueError(f"{review_dir} is not a supported review directory")
-    return state
-
-
-def _save_state(review_dir: Path, state: dict[str, Any]) -> None:
-    state["updated_at"] = _now()
-    _write_json(review_dir / "state.json", state)
 
 
 def _source_text(review_dir: Path, source: dict[str, Any]) -> str:
@@ -924,6 +911,18 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
             f"| `{source['source_id']}` | {source['type']} | {source['filename']} "
             f"| `{source['sha256']}` | {source['text_extraction']} |"
         )
+    publication = state.get("publication")
+    if publication:
+        lines.extend(
+            [
+                "",
+                "## Publication",
+                "",
+                f"- Plan SHA-256: `{publication.get('plan_sha256') or 'not planned'}`",
+                f"- Approved by: {publication.get('approved_by') or 'not approved'}",
+                f"- Review page: {publication.get('page_url') or 'not published'}",
+            ]
+        )
     if function_map:
         lines.extend(["", "## Function map", ""])
         map_fields = (
@@ -1036,5 +1035,6 @@ def get_status(review_dir: Path) -> dict[str, Any]:
         "needs_reconciliation": sum(
             finding.get("reconciliation_required", False) for finding in findings
         ),
+        "publication": state.get("publication"),
         "review_dir": str(review_dir.resolve()),
     }

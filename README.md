@@ -1,18 +1,18 @@
 # DR Reviewer
 
-DR Reviewer is a local-first, read-only implementation of the first release in
-the implementation plan. It creates an immutable evidence snapshot for a DR,
-its BR, and optional attachments; produces a shared review brief; validates and
-merges evidence-backed findings; imports independent verification results;
-records human decisions; and renders a review report.
+DR Reviewer implements Phases 1 and 2 of the implementation plan. It creates an
+immutable evidence snapshot for a DR, its BR, and attachments (from local files
+or read-only from Confluence Cloud); produces a shared review brief; validates
+and merges evidence-backed findings; imports independent verification results;
+records human decisions; renders a review report; and, after explicit human
+approval, publishes one new Confluence review page listing accepted findings.
 
-This workspace contains no existing source pipeline or external service
-connector. The CLI handles local snapshots, deterministic validation/merging,
-verification-result import, reconciliation-result import, decisions, and
-reporting. The `.github/agents` and `prompts_review` files define specialist
-instructions for VS Code; the CLI does not autonomously launch agents.
-Semantic verification remains independent human or agent work. Nothing is
-published or written back to source systems.
+The CLI handles snapshots, deterministic validation/merging,
+verification-result import, reconciliation-result import, decisions,
+reporting, and gated publication. The `.github/agents` and `prompts_review`
+files define specialist instructions for VS Code; the CLI does not
+autonomously launch agents. Semantic verification remains independent human
+or agent work. The DR is never edited, and no comments are added.
 
 ## Requirements
 
@@ -22,18 +22,18 @@ published or written back to source systems.
 Install with `python -m pip install -e .`. Then run `python -m dr_reviewer` or
 use the `dr-review` command from any directory.
 
-## Phase 1 layout
+## Layout
 
-- `.github/agents/` — orchestrator and five specialist/verification agent
-  definitions, restricted to read/search tools
-- `.github/prompts/dr-review.prompt.md` — VS Code prompt to start a local DR
-  review
-- `config/review/` — phase pipeline, severity policy, and evidence authority
+- `.github/agents/` — the `dr-reviewer` orchestrator (which may delegate and
+  run the workflow scripts) and five read-only specialist/verification agents
+- `.github/prompts/dr-review.prompt.md` — VS Code prompt to start a DR review
+- `config/review/` — pipeline stages, severity policy, evidence authority, and
+  Confluence settings (`confluence.yaml`)
 - `prompts_review/` — shared workflow, track prompts, merge, verify, reconcile,
-  and decision-package instructions
+  decision-package, and publication-plan instructions
 - `schemas/review/` — JSON Schemas for state, sources, findings, verification,
   and decisions
-- `scripts/review/` — command-line entry points for the Phase 1 workflow
+- `scripts/review/` — command-line entry points for the workflow
 - `src/dr_reviewer/` — package implementation behind both scripts and CLI
 
 Open `.github/prompts/dr-review.prompt.md` in VS Code to start the
@@ -57,12 +57,32 @@ python scripts/review/init_dr_review.py `
   --runs-dir .\runs
 ```
 
-`fetch_review_sources.py` uses the same local-only capture arguments: source
+`fetch_review_sources.py` uses the same capture arguments: source
 acquisition is part of initialization so the baseline is created atomically.
 The installed equivalent is `python -m dr_reviewer init`.
 
 Page IDs, versions, URLs, and reviewer identity are optional for local-only
-sources and are stored as review provenance when supplied.
+sources and are stored as review provenance when supplied. A DR page ID and
+version are required later if you want to publish a review page.
+
+### Capture from Confluence (read-only)
+
+Copy `.env.example` to `.env` and set `CONFLUENCE_BASE_URL`
+(`https://<site>.atlassian.net`), `CONFLUENCE_EMAIL`, and
+`CONFLUENCE_API_TOKEN`. Environment variables override `.env`; `--env-file`
+selects another file. Placeholder values are rejected before any request.
+Then omit `--dr`/`--br` and pass page IDs:
+
+```powershell
+python scripts/review/init_dr_review.py --function-key WSMB010104 `
+  --dr-page-id 1819377813 --br-page-id 1818689539 --reviewer "Reviewer Name"
+```
+
+The storage-format body of each page is saved as an HTML snapshot with its
+current version, and every DR page attachment is downloaded as an attachment
+source. Pass `--dr-version`/`--br-version` to pin a version; capture fails if
+the page has moved on. Local and Confluence sources can be mixed, for example
+a Confluence DR with a local `--br` file. Review tracks only read the snapshot.
 Repeat `--context-source TYPE=PATH` to register local workshop-decision,
 design-export, or comment-export files under their configured authority. These
 are imported local evidence; the reviewer does not retrieve them remotely.
@@ -160,14 +180,38 @@ findings outside that scope, findings without in-snapshot quotes, and human
 decisions until every finding has been independently verified and all flagged
 conflicts have been reconciled.
 
+## Publish a review page (Phase 2)
+
+Once the review status is `completed`, publish accepted findings as one new
+child page of the DR page:
+
+```powershell
+$review = ".\runs\WSMB010104\reviews\R001"
+python scripts/review/build_publish_plan.py $review      # writes publication/plan.md + preview
+python scripts/review/approve_publish_plan.py $review `
+  --approved-by "Reviewer Name" --statement "Approved: publish the R001 review page"
+python scripts/review/publish_dr_review.py $review       # preflight, gate, create, verify
+python scripts/review/check_review_publication.py $review
+```
+
+- `publish-plan` writes nothing to Confluence. It lists included findings
+  (decision `accept`, configurable in `confluence.yaml`) and excluded ones.
+- `publish-approve` records the approver's own words and locks the plan hash
+  in `publication/approved.json`. Rebuilding the plan clears the approval.
+- `publish` first checks that the DR is still at the reviewed version, then
+  re-checks the plan, page body, findings, and approval hashes before writing.
+  Each action is read back and recorded in `publication/publication_log.json`.
+- If publishing fails, the status becomes `publication_failed`. Rerun
+  `publish` to retry: it looks for a page it already created (same title,
+  parent, and publication marker), adopts it instead of duplicating it, and
+  resumes. A different page with the same title is never overwritten.
+
 ## Current boundary
 
-This first release intentionally stops at a local review report. It does not
-implement remote source acquisition, automatic agent invocation, publishing,
-re-review deltas, or controlled DR patching. These require the existing
-application pipeline and external integration details, neither of which are
-present in this workspace. Evidence citation checks are deterministic; they
-do not replace semantic verification.
+Publication creates one review page only. The workflow does not add inline or
+footer comments, edit or patch the DR, update Jira, retrieve design files,
+invoke agents automatically, or run re-review deltas. Evidence citation checks
+are deterministic; they do not replace semantic verification.
 
 ## Tests
 

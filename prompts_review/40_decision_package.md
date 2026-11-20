@@ -10,5 +10,6 @@ status, and proposed disposition. Offer `accept`, `reject`, `defer`,
 `already_addressed`, `needs_clarification`, or `accepted_risk`.
 
 Record decision owner, timestamp, optional rationale, and intended follow-up.
-Approval only records the local decision; it does not authorize or execute
-external publication or DR edits in Phase 1.
+Recording a decision does not authorize publication. Publishing is a separate,
+explicitly approved step (`50_publication_plan.md`) and includes only findings
+whose decision is `accept`; DR edits are never performed.

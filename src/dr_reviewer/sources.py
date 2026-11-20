@@ -1,0 +1,174 @@
+"""Read-only capture of DR/BR pages and DR attachments from Confluence."""
+
+from __future__ import annotations
+
+import re
+import shutil
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from .confluence import (
+    ConfluenceClient,
+    ConfluenceError,
+    ConfluenceGateway,
+    ConfluenceSettings,
+    require_numeric_id,
+)
+from .storage import write_text
+from .workflow import initialize_review
+
+_INVALID_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED = {
+    "con", "prn", "aux", "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+_MAX_FILENAME = 120
+
+
+@dataclass(frozen=True)
+class PageSource:
+    """A DR or BR source: either a local file or a Confluence page ID."""
+
+    path: Path | None = None
+    page_id: str | None = None
+    version: str | None = None
+    url: str | None = None
+
+    @property
+    def is_remote(self) -> bool:
+        return self.path is None
+
+    def validate(self, label: str) -> None:
+        if self.path is None and not self.page_id:
+            raise ValueError(f"Provide a local --{label} file or --{label}-page-id")
+
+
+@dataclass(frozen=True)
+class FetchedAttachment:
+    path: Path
+    attachment_id: str
+    version: str | None
+    url: str
+    parent_page_id: str
+
+
+def safe_filename(name: str, fallback: str = "attachment") -> str:
+    cleaned = _INVALID_FILENAME.sub("_", name).strip(" .") or fallback
+    stem, dot, suffix = cleaned.rpartition(".")
+    if not dot:
+        stem, suffix = cleaned, ""
+    if stem.casefold() in _WINDOWS_RESERVED:
+        stem = f"_{stem}"
+    suffix = f".{suffix}" if suffix else ""
+    if len(stem) + len(suffix) > _MAX_FILENAME:
+        suffix = suffix[:20]
+        stem = stem[: _MAX_FILENAME - len(suffix)]
+    return f"{stem}{suffix}"
+
+
+class ConfluenceSourceFetcher:
+    """Downloads page storage bodies and attachments into a workspace directory."""
+
+    def __init__(self, client: ConfluenceGateway, workspace: Path) -> None:
+        self._client = client
+        self._workspace = workspace
+
+    def fetch_page(
+        self, page_id: str, label: str, expected_version: str | None = None
+    ) -> tuple[Path, str, str | None]:
+        """Return the snapshot path, captured version, and web URL for a page."""
+        page = self._client.get_page(require_numeric_id(page_id, f"{label} page ID"))
+        if expected_version is not None and str(page.version) != str(expected_version).strip():
+            raise ConfluenceError(
+                f"{label} page {page_id} is at version {page.version}, "
+                f"but version {expected_version} was requested"
+            )
+        if page.body_storage is None:
+            raise ConfluenceError(f"{label} page {page_id} returned no storage body")
+        snapshot = self._workspace / f"{label.lower()}-{page.page_id}-v{page.version}.html"
+        write_text(snapshot, page.body_storage)
+        return snapshot, str(page.version), page.web_url
+
+    def fetch_attachments(self, page_id: str) -> list[FetchedAttachment]:
+        page_id = require_numeric_id(page_id, "DR page ID")
+        fetched: list[FetchedAttachment] = []
+        for attachment in self._client.list_attachments(page_id):
+            attachment_id = re.sub(r"[^A-Za-z0-9_-]", "_", attachment.attachment_id)
+            directory = self._workspace / "attachments" / attachment_id
+            directory.mkdir(parents=True, exist_ok=False)
+            destination = directory / safe_filename(attachment.title)
+            url = self._client.download_attachment(attachment, destination)
+            fetched.append(
+                FetchedAttachment(
+                    path=destination,
+                    attachment_id=attachment.attachment_id,
+                    version=None if attachment.version is None else str(attachment.version),
+                    url=url,
+                    parent_page_id=page_id,
+                )
+            )
+        return fetched
+
+
+def initialize_review_from_sources(
+    function_key: str,
+    dr: PageSource,
+    br: PageSource,
+    *,
+    client: ConfluenceGateway | None = None,
+    env_file: Path | None = None,
+    **review_options: Any,
+) -> Path:
+    """Initialize a review, capturing any Confluence-hosted DR/BR read-only."""
+    dr.validate("dr")
+    br.validate("br")
+    if not dr.is_remote and not br.is_remote:
+        return initialize_review(
+            function_key,
+            dr.path,  # type: ignore[arg-type]
+            br.path,  # type: ignore[arg-type]
+            dr_page_id=dr.page_id,
+            dr_version=dr.version,
+            dr_url=dr.url,
+            br_page_id=br.page_id,
+            br_version=br.version,
+            br_url=br.url,
+            **review_options,
+        )
+
+    gateway = client or ConfluenceClient(ConfluenceSettings.from_environment(env_file))
+    workspace = Path(tempfile.mkdtemp(prefix="dr-review-confluence-"))
+    try:
+        fetcher = ConfluenceSourceFetcher(gateway, workspace)
+        resolved: dict[str, tuple[Path, str | None, str | None, str]] = {}
+        for label, source in (("DR", dr), ("BR", br)):
+            if source.is_remote:
+                path, version, url = fetcher.fetch_page(
+                    source.page_id or "", label, source.version
+                )
+                resolved[label] = (path, version, source.url or url, "confluence")
+            else:
+                resolved[label] = (source.path, source.version, source.url, "local")  # type: ignore[assignment]
+        attachments = fetcher.fetch_attachments(dr.page_id or "") if dr.is_remote else []
+        dr_path, dr_version, dr_url, dr_origin = resolved["DR"]
+        br_path, br_version, br_url, br_origin = resolved["BR"]
+        return initialize_review(
+            function_key,
+            dr_path,
+            br_path,
+            dr_page_id=dr.page_id,
+            dr_version=dr_version,
+            dr_url=dr_url,
+            br_page_id=br.page_id,
+            br_version=br_version,
+            br_url=br_url,
+            dr_origin=dr_origin,
+            br_origin=br_origin,
+            confluence_attachments=attachments,
+            **review_options,
+        )
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)

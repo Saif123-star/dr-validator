@@ -32,9 +32,14 @@
         "reconciling",
         "awaiting_decisions",
         "completed",
+        "publication_planned",
+        "publication_approved",
+        "publishing",
+        "published",
         "source_failed",
         "review_failed",
-        "verification_failed"
+        "verification_failed",
+        "publication_failed"
       ]
     },
     "scope": {"enum": ["full", "targeted"]},
@@ -51,7 +56,21 @@
     "finding_count": {"type": "integer", "minimum": 0},
     "decision_count": {"type": "integer", "minimum": 0},
     "function_map_count": {"type": "integer", "minimum": 0},
-    "previous_review_id": {"type": ["string", "null"]}
+    "previous_review_id": {"type": ["string", "null"]},
+    "publication": {
+      "type": ["object", "null"],
+      "properties": {
+        "publication_id": {"type": "string"},
+        "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "planned_at": {"type": "string", "format": "date-time"},
+        "approved_by": {"type": ["string", "null"]},
+        "approved_at": {"type": ["string", "null"]},
+        "page_id": {"type": ["string", "null"]},
+        "page_url": {"type": ["string", "null"]},
+        "published_at": {"type": ["string", "null"]},
+        "last_error": {"type": ["string", "null"]}
+      }
+    }
   },
   "additionalProperties": true
 }

@@ -5,6 +5,14 @@ import json
 import sys
 from pathlib import Path
 
+from .confluence import ConfluenceClient, ConfluenceSettings
+from .publication import (
+    ReviewPagePublisher,
+    approve_publication,
+    build_publication_plan,
+    verify_publication,
+)
+from .sources import PageSource, initialize_review_from_sources
 from .workflow import (
     DECISIONS,
     TRACKS,
@@ -15,35 +23,48 @@ from .workflow import (
     import_function_map,
     import_reconciliations,
     import_verifications,
-    initialize_review,
     record_decision,
     render_report,
     validate_findings,
 )
 
 
+def _confluence_client(env_file: Path | None) -> ConfluenceClient:
+    return ConfluenceClient(ConfluenceSettings.from_environment(env_file))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dr-review",
-        description="Local-first, read-only design-requirement review workflow.",
+        description=(
+            "Design-requirement review workflow: read-only review, then an optional, "
+            "human-approved Confluence review page."
+        ),
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    init = commands.add_parser("init", help="Snapshot a DR, BR, and optional attachments")
+    init = commands.add_parser(
+        "init",
+        help="Snapshot a DR, BR, and attachments from local files or Confluence (read-only)",
+    )
     init.add_argument("--function-key", required=True)
-    init.add_argument("--dr", required=True, type=Path)
-    init.add_argument("--br", required=True, type=Path)
+    init.add_argument("--dr", type=Path, help="Local DR file; omit to fetch --dr-page-id")
+    init.add_argument("--br", type=Path, help="Local BR file; omit to fetch --br-page-id")
     init.add_argument("--attachments", type=Path)
     init.add_argument("--runs-dir", type=Path, default=Path("runs"))
     init.add_argument("--scope", choices=("full", "targeted"), default="full")
     init.add_argument("--tracks", nargs="+", choices=TRACKS)
     init.add_argument("--dr-page-id")
-    init.add_argument("--dr-version")
+    init.add_argument(
+        "--dr-version",
+        help="DR version; required with a local --dr, optional pin for a fetched DR",
+    )
     init.add_argument("--dr-url")
     init.add_argument("--br-page-id")
     init.add_argument("--br-version")
     init.add_argument("--br-url")
     init.add_argument("--reviewer")
+    init.add_argument("--env-file", type=Path, help="Confluence settings file (default: .env)")
     init.add_argument(
         "--context-source",
         action="append",
@@ -108,6 +129,38 @@ def _parser() -> argparse.ArgumentParser:
 
     status = commands.add_parser("status", help="Show the review state")
     status.add_argument("review_dir", type=Path)
+
+    plan = commands.add_parser(
+        "publish-plan",
+        help="Build the publication plan and page preview (writes nothing to Confluence)",
+    )
+    plan.add_argument("review_dir", type=Path)
+
+    approve = commands.add_parser(
+        "publish-approve",
+        help="Record a human approval that locks the publication plan hash",
+    )
+    approve.add_argument("review_dir", type=Path)
+    approve.add_argument("--approved-by", required=True)
+    approve.add_argument(
+        "--statement",
+        required=True,
+        help="The approver's own words authorizing publication",
+    )
+
+    publish = commands.add_parser(
+        "publish",
+        help="Create the approved Confluence review page; rerun to resume after a failure",
+    )
+    publish.add_argument("review_dir", type=Path)
+    publish.add_argument("--env-file", type=Path)
+
+    publish_verify = commands.add_parser(
+        "publish-verify",
+        help="Re-read the published review page and confirm it matches the plan",
+    )
+    publish_verify.add_argument("review_dir", type=Path)
+    publish_verify.add_argument("--env-file", type=Path)
     return parser
 
 
@@ -124,20 +177,15 @@ def main(argv: list[str] | None = None) -> int:
                         "workshop_decision=decisions.md"
                     )
                 context_sources.append((source_type, Path(source_path)))
-            review_dir = initialize_review(
-                function_key=args.function_key,
-                dr_path=args.dr,
-                br_path=args.br,
+            review_dir = initialize_review_from_sources(
+                args.function_key,
+                PageSource(args.dr, args.dr_page_id, args.dr_version, args.dr_url),
+                PageSource(args.br, args.br_page_id, args.br_version, args.br_url),
+                env_file=args.env_file,
                 runs_dir=args.runs_dir,
                 attachments_dir=args.attachments,
                 scope=args.scope,
                 tracks=args.tracks,
-                dr_page_id=args.dr_page_id,
-                dr_version=args.dr_version,
-                dr_url=args.dr_url,
-                br_page_id=args.br_page_id,
-                br_version=args.br_version,
-                br_url=args.br_url,
                 reviewer=args.reviewer,
                 context_sources=context_sources,
             )
@@ -175,6 +223,16 @@ def main(argv: list[str] | None = None) -> int:
             print(render_report(args.review_dir, args.output))
         elif args.command == "status":
             print(json.dumps(get_status(args.review_dir), ensure_ascii=False, indent=2))
+        elif args.command == "publish-plan":
+            print(build_publication_plan(args.review_dir))
+        elif args.command == "publish-approve":
+            print(approve_publication(args.review_dir, args.approved_by, args.statement))
+        elif args.command == "publish":
+            publisher = ReviewPagePublisher(args.review_dir, _confluence_client(args.env_file))
+            print(json.dumps(publisher.publish(), ensure_ascii=False, indent=2))
+        elif args.command == "publish-verify":
+            result = verify_publication(args.review_dir, _confluence_client(args.env_file))
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (OSError, ValueError) as exc:
         print(f"dr-review: error: {exc}", file=sys.stderr)
