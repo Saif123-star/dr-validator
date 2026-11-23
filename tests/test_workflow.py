@@ -194,8 +194,16 @@ class ReviewWorkflowTests(unittest.TestCase):
             rationale="Agreed with the recommendation.",
         )
         report = render_report(self.review_dir).read_text(encoding="utf-8")
-        self.assertIn("Status: **completed**", report)
+        self.assertIn("Development Readiness: Not Ready", report)
         self.assertIn("The account number is required.", report)
+        self.assertIn("Executive Summary", report)
+        self.assertIn("FN001-TRC-001", report)
+        self.assertIn("Source Comparison", report)
+        self.assertIn("Suggested Owner", report)
+        self.assertIn("Testing Needed", report)
+        self.assertNotIn("DRV-", report)
+        self.assertNotIn("Verification rationale", report)
+        self.assertNotIn("Decision owner", report)
 
     def test_rejects_quote_not_present_in_snapshot(self) -> None:
         finding = self._finding("br_traceability")
@@ -301,8 +309,8 @@ class ReviewWorkflowTests(unittest.TestCase):
         findings_path = self._write_json("empty-findings.json", {"findings": []})
         self.assertEqual(import_findings(self.review_dir, findings_path), 0)
         report = render_report(self.review_dir).read_text(encoding="utf-8")
-        self.assertIn("Status: **completed**", report)
-        self.assertIn("No findings have been imported.", report)
+        self.assertIn("NO FINDINGS IDENTIFIED", report)
+        self.assertIn("No findings were identified", report)
         evidence = (self.review_dir / "evidence_snapshot.md").read_text(encoding="utf-8")
         self.assertIn("Original extracted detail", evidence)
         self.assertIn("The account number is required.", evidence)

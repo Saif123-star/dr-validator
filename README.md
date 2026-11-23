@@ -4,8 +4,7 @@ DR Reviewer implements an orchestrated design-requirement review. It creates an
 immutable evidence snapshot for a DR, its BR, and attachments (from local files
 or read-only from Confluence Cloud); produces a shared review brief; validates
 and merges evidence-backed findings; imports independent verification results;
-records human decisions; and automatically writes a detailed local review
-report plus `review_comments.md` containing only findings the user accepted.
+and automatically writes a reviewer-friendly, action-oriented local report.
 
 The CLI handles snapshots, deterministic validation/merging,
 verification-result import, reconciliation-result import, decisions,
@@ -57,10 +56,12 @@ component, API contracts across worksheets, and cross-section contradictions.
 The orchestrator prepares a hash-checked `.xlsx` evidence view for the
 reviewers and reports any coverage limits. For a targeted review, select
 `technical_mapping` and `internal_consistency` to include these checks.
-You provide finding decisions. After the last decision, the orchestrator
-creates `review_report.md` and `review_comments.md` in the review folder. The
-latter contains accepted findings only; it is a local file, not a Confluence
-page. VS Code may prompt you to allow workflow tool calls.
+After verification and any required reconciliation, the orchestrator creates
+`review_report.md` and `evidence_snapshot.md` in the review folder and presents
+the findings directly. The report uses readable finding IDs, source comparison
+tables, exact review locations, business impacts, suggested owners, testing
+guidance, and a development-readiness assessment. No user acceptance step is
+required. VS Code may prompt you to allow workflow tool calls.
 
 If you use VS Code's Local harness, the `/dr-review` prompt also accepts
 the same inputs directly in chat. The Python CLI alone does not invoke agents.
@@ -165,10 +166,11 @@ python scripts/review/merge_findings.py .\runs\WSMB010104\reviews\R001 `
 
 Every finding must conform to `finding.schema.json` and cite at least one exact
 quote from a captured, text-extractable source. Duplicate findings are merged
-deterministically and receive stable IDs. After independent verification and
-any required reconciliation, the workflow directly creates
-`review_report.md` and `evidence_snapshot.md`; no user acceptance step is
-required. To re-check the snapshot manifest, run
+deterministically and retain an internal stable key; the report assigns
+readable IDs such as `WSMB010114-TRC-001` or `WSMB010114-API-001`. After
+independent verification and any required reconciliation, the workflow directly
+creates `review_report.md` and `evidence_snapshot.md`; no user acceptance step
+is required. To re-check the snapshot manifest, run
 `python scripts/review/build_source_registry.py <review_dir>`.
 
 An independent verifier supplies a file shaped like:
@@ -185,24 +187,17 @@ An independent verifier supplies a file shaped like:
 }
 ```
 
-Import it, record a human disposition, and render the report:
+Import it and render the report:
 
 ```powershell
 python -m dr_reviewer verifications-import .\runs\WSMB010104\reviews\R001 `
   .\verification-results.json
 python scripts/review/reconcile_findings.py .\runs\WSMB010104\reviews\R001 `
   .\reconciliation-results.json
-python -m dr_reviewer decide .\runs\WSMB010104\reviews\R001 `
-  DRV-WSMB010104-R001-0123456789 --decision accept --owner "Reviewer"
 python -m dr_reviewer report .\runs\WSMB010104\reviews\R001
 python -m dr_reviewer status .\runs\WSMB010104\reviews\R001
 ```
 
-Decision values: `accept`, `reject`, `defer`, `already_addressed`,
-`needs_clarification`, and `accepted_risk`. The `--action` option records
-intended follow-up as text only; it never performs that action.
-
-Verification must cover the whole finding set before decisions can be recorded.
 If merge or verification exposes conflicting severity or recommendations, use
 `reconciliation.template.json` as the input shape for
 `python -m dr_reviewer reconciliations-import <review_dir> <results.json>`.
@@ -214,22 +209,20 @@ Each entry can contain `business_function`,
 `request_response_field`, `db_mapping`, and `testable_outcome`.
 
 The pipeline records the selected review scope and track set. It rejects
-findings outside that scope, findings without in-snapshot quotes, and human
-decisions until every finding has been independently verified and all flagged
+findings outside that scope and findings without in-snapshot quotes. The report
+is generated after every finding is independently verified and all flagged
 conflicts have been reconciled.
 
 ## Local review deliverables
 
 When the review reaches `completed`, the orchestrator automatically generates:
 
-- `review_report.md` — the full review record, including findings, evidence,
-  verification, reconciliation, and human decisions.
-- `review_comments.md` — only findings with the human decision `accept`,
-  including recommended DR changes and source citations. If no findings are
-  accepted, the file explicitly says so.
+- `review_report.md` — the reviewer-facing report with an executive summary,
+  readable finding IDs, source comparisons, exact locations, impacts, owners,
+  testing scenarios, statuses, and development readiness.
+- `evidence_snapshot.md` — original extracted source detail for reviewers.
 
-Both files remain under `runs/<FunctionKey>/reviews/<ReviewId>/`. To regenerate
-the accepted-comments file after completion:
+Both files remain under `runs/<FunctionKey>/reviews/<ReviewId>/`.
 
 ```powershell
 python -m dr_reviewer review-comments .\runs\WSMB010104\reviews\R001

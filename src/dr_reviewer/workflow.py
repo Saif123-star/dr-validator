@@ -876,6 +876,174 @@ def _refresh_completion(state: dict[str, Any], findings: list[dict[str, Any]]) -
     state["decision_count"] = sum(finding.get("decision") is not None for finding in findings)
 
 
+_REPORT_CATEGORY_CODES = {
+    "br_traceability": "TRC",
+    "technical_mapping": "DAT",
+    "internal_consistency": "CON",
+    "ui_ux_context": "UIX",
+    "document_integrity": "DOC",
+}
+_REPORT_CATEGORY_LABELS = {
+    "br_traceability": "Requirement Traceability",
+    "technical_mapping": "Data Mapping",
+    "internal_consistency": "Internal Consistency",
+    "ui_ux_context": "UI/UX",
+    "document_integrity": "Document Integrity",
+}
+_CONFIDENCE_PERCENTAGES = {"high": "90-100%", "medium": "70-89%", "low": "<70%"}
+_SEVERITY_LABELS = {
+    "critical": "Must Change Before Development",
+    "high": "Must Change Before Development",
+    "medium": "Should Change",
+    "low": "Advisory",
+    "observation": "Informational",
+}
+_SEVERITY_MARKERS = {
+    "critical": "[CRITICAL]",
+    "high": "[HIGH]",
+    "medium": "[MEDIUM]",
+    "low": "[LOW]",
+    "observation": "[INFO]",
+}
+
+
+def _report_source_label(source: dict[str, Any]) -> str:
+    source_type = source["type"]
+    if source_type == "br_page":
+        return "BR"
+    if source_type == "dr_page":
+        return "DR"
+    filename = source["filename"].casefold()
+    if "api" in filename:
+        return "API"
+    if "db" in filename or "database" in filename:
+        return "DB"
+    return "Attachment"
+
+
+def _report_category_code(finding: dict[str, Any]) -> str:
+    category = finding["category"].casefold()
+    if "api" in category or "endpoint" in category:
+        return "API"
+    return _REPORT_CATEGORY_CODES.get(finding["track"], "GEN")
+
+
+def _report_category_label(finding: dict[str, Any]) -> str:
+    category = finding["category"].casefold()
+    if "api" in category or "endpoint" in category:
+        return "API Contract"
+    return _REPORT_CATEGORY_LABELS.get(
+        finding["track"], finding["category"].title()
+    )
+
+
+def _report_owner(finding: dict[str, Any]) -> str:
+    track = finding["track"]
+    category = finding["category"].casefold()
+    if track == "br_traceability":
+        return "Business Analyst + Product Owner"
+    if track == "technical_mapping":
+        if "api" in category or "endpoint" in category:
+            return "API Designer + Technical Lead"
+        if "data" in category or "database" in category:
+            return "Architect + Technical Lead"
+        return "Technical Lead + Architect"
+    if track == "ui_ux_context":
+        return "UI/UX Lead + Product Owner"
+    if track == "document_integrity":
+        return "Business Analyst + QA Lead"
+    return "Business Analyst + Solution Architect"
+
+
+def _report_testing(finding: dict[str, Any]) -> list[str]:
+    track = finding["track"]
+    category = finding["category"].casefold()
+    if track == "br_traceability":
+        return [
+            "Requirement-to-test traceability review",
+            "Acceptance-criteria coverage check",
+            "Positive and negative business-rule scenarios",
+        ]
+    if track == "technical_mapping":
+        if "api" in category or "endpoint" in category:
+            return [
+                "API schema and contract tests",
+                "Request, response, and error-path tests",
+                "Integration test against the mapped data source",
+            ]
+        return [
+            "UI-to-API-to-database integration test",
+            "Field length, type, and nullability boundary tests",
+            "Cross-sheet mapping and persistence verification",
+        ]
+    if track == "ui_ux_context":
+        return [
+            "Component and interaction tests",
+            "Validation, error, and empty-state tests",
+            "Accessibility and responsive behavior checks",
+        ]
+    if track == "document_integrity":
+        return [
+            "Document structure and completeness checks",
+            "Source-to-implementation traceability review",
+        ]
+    return [
+        "Cross-section consistency test",
+        "Positive and negative behavior scenarios",
+        "Regression test for affected functionality",
+    ]
+
+
+def _report_status(finding: dict[str, Any]) -> str:
+    return _SEVERITY_LABELS[finding["severity"]]
+
+
+def _report_sort_key(finding: dict[str, Any]) -> tuple[int, int, int]:
+    severity_rank = _SEVERITY_RANK[finding["severity"]]
+    confidence_rank = CONFIDENCE_LEVELS.index(finding["confidence"])
+    impact_rank = 0 if finding["must_change"] else 1
+    return severity_rank, confidence_rank, impact_rank
+
+
+def _report_location_lines(
+    finding: dict[str, Any], sources_by_id: dict[str, dict[str, Any]]
+) -> list[str]:
+    lines: list[str] = []
+    for evidence in finding["evidence"]:
+        source = sources_by_id[evidence["source_id"]]
+        label = _report_source_label(source)
+        lines.append(f"{label} -> {evidence['locator']}")
+    return list(dict.fromkeys(lines))
+
+
+def _report_table_value(value: str) -> str:
+    return " ".join(value.split()).replace("|", "\\|")
+
+
+def _report_comparison_value(value: str, conflicting: bool) -> str:
+    rendered = _report_table_value(value)
+    if any(
+        marker in rendered.casefold()
+        for marker in ("not specified", "not defined", "missing", "no mapping")
+    ):
+        return f"**MISSING / NOT DEFINED:** {rendered}"
+    return f"**CONFLICT:** {rendered}" if conflicting else rendered
+
+
+def _report_id_map(
+    function_key: str, findings: list[dict[str, Any]]
+) -> dict[str, str]:
+    counters: dict[str, int] = {}
+    identifiers: dict[str, str] = {}
+    for finding in findings:
+        code = _report_category_code(finding)
+        counters[code] = counters.get(code, 0) + 1
+        identifiers[finding["finding_id"]] = (
+            f"{function_key}-{code}-{counters[code]:03d}"
+        )
+    return identifiers
+
+
 def record_decision(
     review_dir: Path,
     finding_id: str,
@@ -960,7 +1128,7 @@ def import_function_map(review_dir: Path, function_map_path: Path) -> int:
     return len(entries)
 
 
-def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
+def _render_legacy_report(review_dir: Path, output_path: Path | None = None) -> Path:
     state = _load_state(review_dir)
     findings = _read_json(review_dir / "findings.json").get("findings", [])
     function_map = _read_json(review_dir / "function_map.json").get("entries", [])
@@ -1080,6 +1248,223 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
             "This report reflects a local, read-only workflow. Evidence citations are checked",
             "against the captured snapshots; semantic verification remains an independent",
             "reviewer or human responsibility.",
+        ]
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report_path
+
+
+def _finding_reason(finding: dict[str, Any]) -> str:
+    evidence_locations = ", ".join(
+        evidence["locator"] for evidence in finding["evidence"]
+    )
+    return (
+        f"The review identified a mismatch, omission, or ambiguity in "
+        f"{finding['category']} at {evidence_locations}. The cited values or "
+        "missing definition are not sufficiently aligned for implementation "
+        "and testing."
+    )
+
+
+def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
+    """Render an action-oriented report for delivery to project reviewers."""
+    state = _load_state(review_dir)
+    render_evidence_snapshot(review_dir)
+    findings = sorted(
+        _read_json(review_dir / "findings.json").get("findings", []),
+        key=_report_sort_key,
+    )
+    function_map = _read_json(review_dir / "function_map.json").get("entries", [])
+    sources_by_id = {source["source_id"]: source for source in state["sources"]}
+    report_ids = _report_id_map(state["function_key"], findings)
+    severity_counts = {
+        severity: sum(finding["severity"] == severity for finding in findings)
+        for severity in ("critical", "high", "medium", "low", "observation")
+    }
+    category_counts: dict[str, int] = {}
+    for finding in findings:
+        category = _report_category_label(finding)
+        category_counts[category] = category_counts.get(category, 0) + 1
+    must_change = sum(finding["must_change"] for finding in findings)
+    readiness = (
+        "Not Ready"
+        if severity_counts["critical"] or severity_counts["high"]
+        else "Ready with Conditions"
+        if findings
+        else "Ready"
+    )
+    report_path = output_path or review_dir / "review_report.md"
+    lines = [
+        f"# DR Review Report: {state['function_key']}",
+        "",
+        "## Executive Summary",
+        "",
+        f"- **Function Key:** {state['function_key']}",
+        f"- **Review ID:** {state['review_id']}",
+        f"- **Overall Status:** "
+        f"{'REVIEW REQUIRED' if findings else 'NO FINDINGS IDENTIFIED'}",
+        "",
+        "### Findings Summary",
+        "",
+        f"- Total Findings: {len(findings)}",
+        f"- Must Change: {must_change}",
+        f"- Should Change: {severity_counts['medium']}",
+        f"- Advisory: {severity_counts['low']}",
+        f"- Informational: {severity_counts['observation']}",
+        "",
+        "### Category Breakdown",
+        "",
+    ]
+    lines.extend(
+        f"- {category}: {count}"
+        for category, count in sorted(category_counts.items())
+    )
+    if not category_counts:
+        lines.append("- No findings")
+    lines.extend(["", "### High Risk Findings", ""])
+    high_risk = [
+        finding
+        for finding in findings
+        if finding["severity"] in {"critical", "high"}
+    ][:5]
+    lines.extend([
+        f"- {report_ids[finding['finding_id']]}: {finding['title']}"
+        for finding in high_risk
+    ] or ["- None"])
+    lines.extend(
+        [
+            "",
+            f"### Development Readiness: {readiness}",
+            "",
+            "## Findings",
+            "",
+        ]
+    )
+    if not findings:
+        lines.append("No findings were identified by the selected review tracks.")
+
+    for finding in findings:
+        report_id = report_ids[finding["finding_id"]]
+        category_label = _report_category_label(finding)
+        locations = _report_location_lines(finding, sources_by_id)
+        lines.extend(
+            [
+                f"### {_SEVERITY_MARKERS[finding['severity']]} {report_id}",
+                f"#### {finding['title']}",
+                "",
+                f"**Finding Type:** {category_label}",
+                f"**Category:** {finding['category']}",
+                "",
+                "#### Summary",
+                "",
+                finding["summary"],
+                "",
+                "#### Why This Finding Was Raised",
+                "",
+                _finding_reason(finding),
+                "",
+                "#### Business Impact",
+                "",
+                finding["impact"],
+                "",
+                "#### Source Comparison",
+                "",
+                "| Source | Review Location | Value |",
+                "|---|---|---|",
+            ]
+        )
+        comparison_values = {
+            normalize_quote(evidence["quote"])
+            for evidence in finding["evidence"]
+        }
+        conflicting = len(comparison_values) > 1
+        for evidence in finding["evidence"]:
+            source = sources_by_id[evidence["source_id"]]
+            lines.append(
+                f"| {_report_source_label(source)} | "
+                f"{_report_table_value(evidence['locator'])} | "
+                f"{_report_comparison_value(evidence['quote'], conflicting)} |"
+            )
+        lines.extend(["", "#### Review Location", ""])
+        for location in locations:
+            label, _, path = location.partition(" -> ")
+            lines.extend([f"- {label}", f"  - {path}"])
+        if not locations:
+            lines.append("- Location not specified in the finding evidence.")
+        lines.extend(["", "#### Affected Components", ""])
+        lines.extend(f"- {section}" for section in finding["affected_sections"])
+        lines.extend(
+            [
+                "",
+                "#### Confidence",
+                "",
+                f"{finding['confidence'].title()} "
+                f"({_CONFIDENCE_PERCENTAGES[finding['confidence']]})",
+                "",
+                "#### Required Action",
+                "",
+                finding["recommendation"],
+                "",
+                "#### Suggested Owner",
+                "",
+                _report_owner(finding),
+                "",
+                "#### Testing Needed",
+                "",
+            ]
+        )
+        lines.extend(f"- {test}" for test in _report_testing(finding))
+        lines.extend(
+            [
+                "",
+                "#### Status",
+                "",
+                _report_status(finding),
+                "",
+            ]
+        )
+
+    critical_count = severity_counts["critical"] + severity_counts["high"]
+    low_count = severity_counts["low"] + severity_counts["observation"]
+    readiness_actions = [
+        (
+            f"Resolve the {critical_count} critical/high-risk finding(s) "
+            "before development."
+            if critical_count
+            else "No critical or high-risk remediation is currently required."
+        ),
+        "Assign the suggested owners and confirm remediation acceptance criteria.",
+        "Review the listed test scenarios with QA before implementation sign-off.",
+    ]
+    lines.extend(
+        [
+            "## Development Readiness Assessment",
+            "",
+            f"- Critical Findings: {critical_count}",
+            f"- Medium Findings: {severity_counts['medium']}",
+            f"- Low Findings: {low_count}",
+            "",
+            f"**Readiness Recommendation:** {readiness}",
+            "",
+            "### Next Actions",
+            "",
+        ]
+    )
+    lines.extend(f"- {action}" for action in readiness_actions)
+    lines.extend(
+        [
+            "",
+            "### Suggested Review Meeting Agenda",
+            "",
+            "- Confirm ownership and target dates for must-change findings.",
+            "- Resolve unresolved requirement, API, data, and UI decisions.",
+            "- Confirm test coverage and entry criteria for development.",
+            "",
+            f"Function-map entries available: {len(function_map)}.",
+            "",
+            "This report is a reviewer-facing summary of the verified local review.",
+            "Source integrity metadata is retained separately in manifest.json.",
         ]
     )
     report_path.parent.mkdir(parents=True, exist_ok=True)
