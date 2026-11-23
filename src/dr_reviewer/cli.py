@@ -11,6 +11,7 @@ from .workflow import (
     TRACKS,
     create_brief,
     export_workbook_evidence,
+    render_evidence_snapshot,
     get_status,
     build_source_registry,
     import_findings,
@@ -87,6 +88,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Export hash-checked DR workbook cells for the review agents",
     )
     workbook.add_argument("review_dir", type=Path)
+
+    evidence_snapshot = commands.add_parser(
+        "evidence-snapshot",
+        help="Render original extracted source detail for the review",
+    )
+    evidence_snapshot.add_argument("review_dir", type=Path)
+    evidence_snapshot.add_argument("--output", type=Path)
 
     verifications = commands.add_parser(
         "verifications-import",
@@ -171,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
             print(build_source_registry(args.review_dir, args.output))
         elif args.command == "workbook-evidence":
             print(export_workbook_evidence(args.review_dir))
+        elif args.command == "evidence-snapshot":
+            print(render_evidence_snapshot(args.review_dir, args.output))
         elif args.command == "verifications-import":
             count = import_verifications(args.review_dir, args.verification_file)
             print(f"Imported {count} verification result(s).")

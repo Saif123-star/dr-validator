@@ -5,8 +5,7 @@
 Produce a traceable, repeatable review of an existing DR against its BR and
 supplied attachments. The orchestrator coordinates specialist work; it does
 not perform the review. Review work is read-only with respect to source
-documents and external systems. The only external write is one new
-local Markdown file of human-accepted review comments.
+documents and external systems. The deliverables are local Markdown reports.
 
 ## Baseline and evidence
 
@@ -37,18 +36,14 @@ local Markdown file of human-accepted review comments.
    alone is not semantic verification.
 6. **Reconcile:** resolve flagged recommendation/severity conflicts as
    proposals. Keep unresolved issues visible.
-7. **Decide:** present findings and options to the human. Decisions require
-   owner, timestamp, and rationale when provided.
-8. **Report:** render a local review report. Never edit the DR.
-9. **Deliver:** automatically render `review_comments.md` in the review
-   directory after completion. Include only findings whose recorded human
-   decision is `accept`; preserve source citations and verification results.
+7. **Report:** after verification and any required reconciliation, render the
+   local review report and evidence snapshot. Never edit the DR.
 
 ## Completion
 
-Do not describe a review as complete if required tracks, verification,
-reconciliation, or decisions remain pending. A review with no findings may be
-completed after the selected checks finish and the empty result is recorded.
+Do not describe a review as complete if required tracks, verification, or
+reconciliation remain pending. A review with no findings may be completed
+after the selected checks finish and the empty result is recorded.
 Do not describe a review as complete until its local reports have been written.
 
 ## Limits

@@ -342,7 +342,8 @@ def _source_text(review_dir: Path, source: dict[str, Any]) -> str:
 def _write_brief(path: Path, state: dict[str, Any]) -> None:
     source_lines = [
         f"- `{source['source_id']}` ({source['type']}): {source['filename']} "
-        f"— SHA-256 `{source['sha256']}`, extraction `{source['text_extraction']}`"
+        f"— snapshot `{source['snapshot_path']}`, "
+        f"extraction `{source['text_extraction']}`"
         for source in state["sources"]
     ]
     body = [
@@ -626,7 +627,7 @@ def merge_findings(review_dir: Path, findings_path: Path) -> int:
     state["finding_count"] = len(merged)
     _save_state(review_dir, state)
     if state["status"] == "completed":
-        render_review_comments(review_dir)
+        render_report(review_dir)
     return len(merged)
 
 
@@ -661,6 +662,49 @@ def export_workbook_evidence(review_dir: Path) -> Path:
     return output
 
 
+def render_evidence_snapshot(
+    review_dir: Path, output_path: Path | None = None
+) -> Path:
+    """Write the extracted source content used as the review evidence view."""
+    state = _load_state(review_dir)
+    lines = [
+        f"# Evidence snapshot: {state['function_key']} / {state['review_id']}",
+        "",
+        "This file contains the original extracted detail from the locked local "
+        "source snapshots. Integrity hashes remain in `manifest.json` and are "
+        "not used as a substitute for source content.",
+        "",
+    ]
+    for source in state["sources"]:
+        lines.extend(
+            [
+                f"## {source['source_id']}: {source['filename']}",
+                "",
+                f"- Type: `{source['type']}`",
+                f"- Snapshot: `{source['snapshot_path']}`",
+                f"- Extraction: `{source['text_extraction']}`",
+            ]
+        )
+        if source.get("page_id"):
+            lines.append(f"- Page ID: `{source['page_id']}`")
+        if source.get("version"):
+            lines.append(f"- Version: `{source['version']}`")
+        lines.extend(["", "### Original extracted detail", ""])
+        detail = _source_text(review_dir, source).rstrip()
+        if detail:
+            lines.extend(["```text", detail or "[Source contained no extracted text.]", "```"])
+        else:
+            lines.append(
+                "[Original binary/image content is retained in the snapshot, "
+                "but text extraction is unavailable.]"
+            )
+        lines.append("")
+    snapshot_path = output_path or review_dir / "evidence_snapshot.md"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return snapshot_path
+
+
 def _advance_after_verification(
     state: dict[str, Any], findings: list[dict[str, Any]]
 ) -> None:
@@ -681,7 +725,7 @@ def _advance_after_verification(
     elif any(finding.get("reconciliation_required") for finding in actionable):
         state["status"] = "reconciling"
     else:
-        state["status"] = "awaiting_decisions"
+        state["status"] = "completed"
 
 
 def import_verifications(review_dir: Path, verification_path: Path) -> int:
@@ -739,7 +783,7 @@ def import_verifications(review_dir: Path, verification_path: Path) -> int:
     _write_json(review_dir / "findings.json", findings_payload)
     _save_state(review_dir, state)
     if state["status"] == "completed":
-        render_review_comments(review_dir)
+        render_report(review_dir)
     return len(values)
 
 
@@ -813,18 +857,22 @@ def import_reconciliations(review_dir: Path, reconciliation_path: Path) -> int:
     _write_json(review_dir / "findings.json", payload)
     _save_state(review_dir, state)
     if state["status"] == "completed":
-        render_review_comments(review_dir)
+        render_report(review_dir)
     return len(values)
 
 
 def _refresh_completion(state: dict[str, Any], findings: list[dict[str, Any]]) -> None:
     terminal_verdicts = {"rejected", "duplicate", "insufficient_evidence"}
-    resolved = all(
-        finding.get("decision") is not None
-        or finding.get("verification", {}).get("verdict") in terminal_verdicts
+    if any(finding.get("verification", {}).get("verdict") is None for finding in findings):
+        state["status"] = "verifying"
+    elif any(
+        finding.get("reconciliation_required")
         for finding in findings
-    )
-    state["status"] = "completed" if resolved else "awaiting_decisions"
+        if finding.get("verification", {}).get("verdict") not in terminal_verdicts
+    ):
+        state["status"] = "reconciling"
+    else:
+        state["status"] = "completed"
     state["decision_count"] = sum(finding.get("decision") is not None for finding in findings)
 
 
@@ -916,6 +964,7 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
     state = _load_state(review_dir)
     findings = _read_json(review_dir / "findings.json").get("findings", [])
     function_map = _read_json(review_dir / "function_map.json").get("entries", [])
+    evidence_snapshot = render_evidence_snapshot(review_dir)
     report_path = output_path or review_dir / "review_report.md"
     lines = [
         f"# DR review report: {state['function_key']} / {state['review_id']}",
@@ -933,13 +982,17 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
         "",
         "## Evidence snapshot",
         "",
-        "| Source | Type | File | SHA-256 | Text extraction |",
+        f"Original extracted source detail: `{evidence_snapshot.name}`.",
+        "Integrity hashes are retained in `manifest.json`; they are not shown "
+        "as the evidence content.",
+        "",
+        "| Source | Type | File | Snapshot | Text extraction |",
         "|---|---|---|---|---|",
     ]
     for source in state["sources"]:
         lines.append(
             f"| `{source['source_id']}` | {source['type']} | {source['filename']} "
-            f"| `{source['sha256']}` | {source['text_extraction']} |"
+            f"| `{source['snapshot_path']}` | {source['text_extraction']} |"
         )
     if function_map:
         lines.extend(["", "## Function map", ""])

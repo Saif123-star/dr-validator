@@ -303,8 +303,40 @@ class ReviewWorkflowTests(unittest.TestCase):
         report = render_report(self.review_dir).read_text(encoding="utf-8")
         self.assertIn("Status: **completed**", report)
         self.assertIn("No findings have been imported.", report)
-        comments = (self.review_dir / "review_comments.md").read_text(encoding="utf-8")
-        self.assertIn("No findings were accepted", comments)
+        evidence = (self.review_dir / "evidence_snapshot.md").read_text(encoding="utf-8")
+        self.assertIn("Original extracted detail", evidence)
+        self.assertIn("The account number is required.", evidence)
+        self.assertNotIn("SHA-256", report)
+
+    def test_completes_after_verification_without_human_decision(self) -> None:
+        findings_path = self._write_json(
+            "verified-findings.json",
+            {"findings": [self._finding("br_traceability")]},
+        )
+        self.assertEqual(import_findings(self.review_dir, findings_path), 1)
+        findings = json.loads(
+            (self.review_dir / "findings.json").read_text(encoding="utf-8")
+        )["findings"]
+        verification_path = self._write_json(
+            "verified-results.json",
+            {
+                "verifications": [
+                    {
+                        "finding_id": findings[0]["finding_id"],
+                        "verdict": "verified",
+                        "rationale": "The cited requirement is present.",
+                    }
+                ]
+            },
+        )
+        import_verifications(self.review_dir, verification_path)
+        state = json.loads(
+            (self.review_dir / "state.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(state["status"], "completed")
+        self.assertTrue((self.review_dir / "review_report.md").is_file())
+        self.assertTrue((self.review_dir / "evidence_snapshot.md").is_file())
+        self.assertFalse((self.review_dir / "review_comments.md").exists())
 
     def test_writes_only_human_accepted_findings_to_comments_file(self) -> None:
         accepted_finding = self._finding("br_traceability")

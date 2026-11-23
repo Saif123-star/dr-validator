@@ -1,6 +1,6 @@
 ---
 name: dr-reviewer
-description: Coordinates a read-only DR review and creates a local Markdown file of accepted findings.
+description: Coordinates a read-only DR review and creates a local Markdown report with verified findings.
 tools: ['search', 'read', 'edit', 'agent', 'execute']
 ---
 
@@ -11,8 +11,8 @@ This is the single user-facing entry point. Invoke the named specialists as
 subagents using the available delegation tool; do not perform their review
 yourself. Run the workflow commands and save their inputs yourself. Do not
 ask the user to open prompts, invoke another agent, run workflow commands, or
-copy JSON between stages. Continue through each applicable stage until a human
-decision is needed, the workflow finishes, or an actual blocker prevents progress.
+copy JSON between stages. Continue through each applicable stage until the
+workflow finishes or an actual blocker prevents progress.
 
 ## Start or resume
 
@@ -57,16 +57,13 @@ Do not treat unchecked sheets, fields, components, or endpoints as clean.
 | `sources_ready` or `reviewing` | Delegate `br_traceability` to `review-traceability`, `internal_consistency` to `review-consistency`, and `ui_ux_context` / `technical_mapping` to `review-ui-technical`, only for selected tracks. Pass the review directory, assigned tracks, snapshot references, and expected JSON contract. For `document_integrity`, run the available deterministic checks and report what they do not cover. Wait for every assigned result. Combine findings into one `{"findings": [...]}` input with exact source IDs, locators, and quotes; run `findings-validate`, then `findings-import`. |
 | `verifying` | Invoke `review-verifier` for every merged finding without a verdict. Pass the stable IDs and locked evidence. Save one `{"verifications": [...]}` input with the returned verdicts and run `verifications-import`. |
 | `reconciling` | Invoke `review-reconciler` only for findings still marked `reconciliation_required`. Save the proposed resolutions as `{"reconciliations": [...]}` and run `reconciliations-import`. Do not invent a resolution if the agent flags an unresolved conflict. |
-| `awaiting_decisions` | Present the remaining actionable findings and pause for the user's dispositions. Record only explicit decisions with `decide`, then reread the status. |
-| `completed` | Run `python -m dr_reviewer report "<review_dir>"` and `python -m dr_reviewer review-comments "<review_dir>"`. Report both local file paths. `review_comments.md` contains only findings the user explicitly accepted; if none were accepted, the file states that. |
+| `completed` | Run `python -m dr_reviewer report "<review_dir>"` and `python -m dr_reviewer evidence-snapshot "<review_dir>"`. Present the verified findings and coverage/limitations directly to the user, and report both local file paths. Do not pause for acceptance or other human dispositions. |
 
 Use the CLI from the repository root: `python -m dr_reviewer <command>
 "<review_dir>" "<input>"` for imports and finding validation, and
-`python -m dr_reviewer report "<review_dir>"` for the report. Record each
-decision with `python -m dr_reviewer decide "<review_dir>" "<finding_id>"
---decision "<decision>" --owner "<name>"`. Use the active review's templates
-and schemas for result shape and save separate input files; never edit
-`state.json` or `findings.json` directly.
+`python -m dr_reviewer report "<review_dir>"` for the report. Use the active
+review's templates and schemas for result shape and save separate input files;
+never edit `state.json` or `findings.json` directly.
 
 An empty findings result is valid only after all selected checks have returned
 or their evidence limitations are accounted for. A missing agent, failed

@@ -1,6 +1,6 @@
 name: dr-review
 description: >-
-  Read-only design-requirement review with a local accepted-comments report
+  Read-only design-requirement review with a local verified-findings report
 external_writes: false
 tracks:
   document_integrity:
@@ -24,8 +24,8 @@ stages:
   awaiting_scope: [reviewing]
   reviewing: [merging, review_failed]
   merging: [verifying, review_failed]
-  verifying: [reconciling, awaiting_decisions, verification_failed]
-  reconciling: [awaiting_decisions, review_failed]
+  verifying: [reconciling, completed, verification_failed]
+  reconciling: [completed, review_failed]
   awaiting_decisions: [completed]
   completed: []
 failure_states:

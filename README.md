@@ -130,7 +130,9 @@ The command creates `runs/<FunctionKey>/reviews/R001/` with:
 
 The review stores source filenames, content hashes, capture timestamps, source
 types, and text-extraction status. It does not store the original absolute input
-paths. Source snapshots are hash-checked before evidence is accepted.
+paths. Source snapshots are hash-checked before evidence is accepted. The
+original extracted source detail is rendered to `evidence_snapshot.md`; hashes
+remain integrity metadata in `manifest.json`.
 The authority and severity settings are loaded from `config/review/`.
 
 Supported text extraction includes DOCX, XLSX, UTF-8 text, Markdown, CSV, HTML,
@@ -149,7 +151,7 @@ python -m dr_reviewer init --function-key WSMB010104 `
 Available tracks: `document_integrity`, `br_traceability`,
 `internal_consistency`, `ui_ux_context`, and `technical_mapping`.
 
-## Findings and decisions
+## Findings and reports
 
 Have the specialist reviewers fill `agent_findings.template.json`. Validate it
 without changing review state, then merge it:
@@ -163,8 +165,11 @@ python scripts/review/merge_findings.py .\runs\WSMB010104\reviews\R001 `
 
 Every finding must conform to `finding.schema.json` and cite at least one exact
 quote from a captured, text-extractable source. Duplicate findings are merged
-deterministically and receive stable IDs. To re-check the snapshot manifest,
-run `python scripts/review/build_source_registry.py <review_dir>`.
+deterministically and receive stable IDs. After independent verification and
+any required reconciliation, the workflow directly creates
+`review_report.md` and `evidence_snapshot.md`; no user acceptance step is
+required. To re-check the snapshot manifest, run
+`python scripts/review/build_source_registry.py <review_dir>`.
 
 An independent verifier supplies a file shaped like:
 

@@ -1,0 +1,398 @@
+DR REVIEW AGENT FLOW AND REPORT GENERATION
+==========================================
+
+Purpose
+-------
+
+This document describes which agents run during a DR review, when they run,
+what each agent does, and how the final review report is generated.
+
+
+1. END-TO-END FLOW
+------------------
+
+User provides:
+
+    Function Key
+    DR URL
+    BR URL
+
+The workflow is:
+
+    User input
+        |
+        v
+    dr-reviewer orchestrator
+        |
+        v
+    Read-only Confluence capture
+        |
+        v
+    Source baseline and evidence preparation
+        |
+        v
+    Specialist review agents
+        |
+        v
+    Findings validation and deterministic merge
+        |
+        v
+    Independent verification
+        |
+        v
+    Optional reconciliation
+        |
+        v
+    Automatic report generation
+        |
+        v
+    Findings and limitations shown directly to the user
+
+The DR and BR remain read-only throughout the workflow. No Confluence page,
+comment, Jira record, or external document is modified.
+
+
+2. DR-REVIEWER ORCHESTRATOR
+---------------------------
+
+The orchestrator is the single user-facing agent.
+
+Its responsibilities are:
+
+1. Read the Function Key, DR URL, and BR URL.
+2. Extract the Confluence page IDs.
+3. Initialize a new local review directory.
+4. Capture the DR, BR, and DR attachments from Confluence in read-only mode.
+5. Verify the source baseline.
+6. Prepare workbook and evidence snapshots.
+7. Delegate the selected specialist review tracks.
+8. Collect and validate specialist JSON results.
+9. Merge duplicate or overlapping findings.
+10. Invoke the independent verifier.
+11. Invoke the reconciler only when conflicts require it.
+12. Generate the final local review report.
+13. Present findings, coverage, and limitations directly to the user.
+
+The orchestrator does not perform specialist review itself and does not ask the
+user to run individual scripts or copy JSON between stages.
+
+
+3. SOURCE CAPTURE AND BASELINE
+------------------------------
+
+The source capture process creates a directory such as:
+
+    runs\<FunctionKey>\reviews\R001
+
+It stores:
+
+    state.json
+    manifest.json
+    review_brief.md
+    sources\
+
+Each source records:
+
+    Source ID
+    Source type
+    Filename
+    Confluence page ID and version, when applicable
+    Local snapshot path
+    Extracted text status
+    SHA-256 integrity hash
+
+SHA-256 is used only to detect whether a captured source changed. It is not
+the evidence shown to the reviewer and it is not encryption.
+
+The original extracted source detail is written to:
+
+    evidence_snapshot.md
+
+Workbook content used by technical and consistency reviews is also exported
+to:
+
+    workbook_evidence.txt
+
+
+4. SPECIALIST AGENTS
+--------------------
+
+4.1 review-traceability
+
+Job:
+
+    - Compare DR requirements against the BR.
+    - Check whether BR requirements are represented in the DR.
+    - Identify missing, incomplete, or ambiguous traceability.
+    - Cite exact source IDs, locations, and quotes.
+    - Return structured finding objects.
+
+This agent does not edit source documents and does not make business
+disposition decisions.
+
+
+4.2 review-consistency
+
+Job:
+
+    - Check contradictions within the DR.
+    - Compare the DR page against worksheets and attachments.
+    - Check inconsistent terminology, states, rules, roles, and behavior.
+    - Check cross-sheet mismatches.
+    - Check every relevant component across sheets.
+    - Check API endpoint consistency across sheets.
+    - Check declared field lengths and mappings.
+
+This agent reviews internal consistency and implementation-readiness gaps.
+
+
+4.3 review-ui-technical
+
+This agent handles UI/UX context and technical mapping.
+
+UI/UX responsibilities:
+
+    - Review UI components and UI events.
+    - Review user interactions and validation behavior.
+    - Review error and empty states.
+    - Identify accessibility evidence where available.
+    - Report limitations when screenshots or design files cannot be assessed.
+
+Technical mapping responsibilities:
+
+    - Check UI-to-API mappings.
+    - Check API request and response fields.
+    - Check API method and path consistency.
+    - Check database entities and columns.
+    - Check API-to-database mappings.
+    - Check declared field lengths.
+    - Check Item Description components across all sheets.
+    - Check endpoint coverage.
+    - Check missing mappings and layer-to-layer contract mismatches.
+
+The agent does not infer unavailable image content and does not invent APIs,
+database mappings, or requirements.
+
+
+5. FINDING VALIDATION AND MERGE
+-------------------------------
+
+The orchestrator combines specialist results into one findings input.
+
+Each finding is validated against:
+
+    - Finding schema
+    - Selected review tracks
+    - Captured source registry
+    - Exact source quote
+    - Source locator
+    - Severity
+    - Impact
+    - Recommendation
+    - Required evidence fields
+
+The merge process:
+
+    1. Groups likely duplicate findings.
+    2. Assigns stable finding IDs.
+    3. Preserves originating tracks.
+    4. Preserves distinct citations.
+    5. Uses the highest provisional severity.
+    6. Flags severity or recommendation conflicts.
+    7. Does not silently discard disagreements.
+
+Example finding ID:
+
+    DRV-WSMB010102-R001-ff1eac9e47
+
+
+6. INDEPENDENT VERIFICATION
+---------------------------
+
+After merging, review-verifier runs independently for every finding.
+
+Its job is to:
+
+    1. Reopen the cited source snapshot.
+    2. Check the exact quote.
+    3. Check the locator.
+    4. Review surrounding context.
+    5. Check whether another section resolves the issue.
+    6. Compare the BR where relevant.
+    7. Recheck both worksheet locations for cross-sheet findings.
+
+Possible verification results are:
+
+    verified
+    rejected
+    downgraded
+    upgraded
+    duplicate
+    needs_human_decision
+    insufficient_evidence
+
+The verifier does not make a business acceptance or rejection decision.
+
+
+7. OPTIONAL RECONCILIATION
+--------------------------
+
+If a severity or recommendation conflict is found, review-reconciler runs.
+
+Its job is to:
+
+    - Review only flagged conflicts.
+    - Select between supported recommendations where evidence allows.
+    - Resolve severity conflicts when justified.
+    - Preserve unresolved disagreements.
+    - Avoid inventing business decisions.
+    - Avoid modifying Confluence.
+
+If no conflict exists, this stage is skipped.
+
+
+8. AUTOMATIC COMPLETION
+-----------------------
+
+The workflow no longer pauses for user acceptance.
+
+After:
+
+    - All selected tracks finish.
+    - Findings are merged.
+    - All findings are independently verified.
+    - Required reconciliation is complete.
+
+The review moves directly to:
+
+    completed
+
+There is no required "accept all" or per-finding decision step before the
+report is created.
+
+The legacy decide command may remain for compatibility, but it is not required
+to complete the review or generate the report.
+
+
+9. REPORT GENERATION
+--------------------
+
+The report is generated by the workflow's render_report function.
+
+The report includes:
+
+    - Function Key
+    - Review ID
+    - Review status
+    - Review scope
+    - Baseline timestamp
+    - DR page and version
+    - BR page and version
+    - Finding count
+    - Evidence snapshot reference
+    - Source IDs, types, filenames, and snapshot paths
+    - Finding IDs
+    - Finding titles
+    - Severity
+    - Originating tracks
+    - Verification verdict
+    - Reconciliation status
+    - Finding summary
+    - Impact
+    - Recommendation
+    - Exact evidence quotes
+    - Source IDs and locators
+    - Verification rationale
+    - Reconciliation rationale, when applicable
+
+Example finding structure:
+
+    DRV-...: Finding title
+
+    Severity: high
+    Tracks: technical_mapping
+    Verification: verified
+    Reconciliation required: no
+
+    Finding summary
+
+    Impact:
+    ...
+
+    Recommendation:
+    ...
+
+    Evidence:
+    Source ID, worksheet or section locator:
+    Exact source quote
+
+    Verification rationale:
+    ...
+
+
+10. EVIDENCE FILES
+------------------
+
+A completed review normally contains:
+
+    runs\<FunctionKey>\reviews\<ReviewId>\
+        state.json
+        manifest.json
+        review_brief.md
+        review_report.md
+        evidence_snapshot.md
+        workbook_evidence.txt
+        findings.json
+        function_map.json
+        sources\
+
+Main deliverables:
+
+    review_report.md
+        Complete verified review findings.
+
+    evidence_snapshot.md
+        Original extracted source detail, with explicit limitations for images
+        or unsupported formats.
+
+    workbook_evidence.txt
+        Sheet and cell-preserving workbook evidence used by technical and
+        consistency reviews.
+
+    manifest.json
+        Source integrity metadata, including SHA-256 values. This file is for
+        validation and change detection, not for presenting evidence.
+
+
+11. IMPORTANT DISTINCTION
+-------------------------
+
+    evidence_snapshot.md
+        Human-readable original detail.
+
+    review_report.md
+        Findings supported by the original detail.
+
+    manifest.json
+        Integrity verification metadata.
+
+    SHA-256
+        Change-detection mechanism, not encrypted evidence.
+
+
+12. USER OUTPUT
+---------------
+
+When the review finishes, the orchestrator shows:
+
+    - Active review directory
+    - Final status
+    - Number of findings
+    - Finding IDs
+    - Finding summaries
+    - Severity and track information
+    - Coverage by track
+    - Evidence limitations
+    - Paths to review_report.md and evidence_snapshot.md
+
+The user does not need to accept findings before receiving the report.
