@@ -7,6 +7,8 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from dr_reviewer.workflow import (
+    _report_evidence_location,
+    _report_evidence_value,
     build_source_registry,
     export_workbook_evidence,
     import_findings,
@@ -197,18 +199,50 @@ class ReviewWorkflowTests(unittest.TestCase):
         self.assertIn("Development Readiness: Not Ready", report)
         self.assertIn("The account number is required.", report)
         self.assertIn("Executive Summary", report)
-        self.assertIn("FN001-TRC-001", report)
-        self.assertIn("Source Comparison", report)
-        self.assertIn("Review Comment", report)
+        self.assertIn("| 1 | HIGH | Account-number rule needs evidence |", report)
+        self.assertIn(
+            "| No. | Severity | Finding | Source | BR Requirement |",
+            report,
+        )
+        self.assertIn("Recommended Action", report)
         self.assertIn("UI Components", report)
         self.assertIn("Database Mapping with API", report)
-        self.assertIn("No gaps found.", report)
+        self.assertIn("| — | — | No verified gaps found | — | — | — | — | — |", report)
+        self.assertIn(
+            "| ID | Severity | Finding | Source | BR Requirement | "
+            "DR Requirement / Cross-Section Value | Review Location | "
+            "Recommended Action |",
+            report,
+        )
+        self.assertNotIn("### Section Summary", report)
+        self.assertNotIn("Checks Performed", report)
+        self.assertNotIn("checks performed", report)
+        self.assertNotIn("Section Limitations", report)
+        self.assertNotIn("### Section Result", report)
         self.assertNotIn("DRV-", report)
         self.assertNotIn("Confidence", report)
         self.assertNotIn("Required Action", report)
         self.assertNotIn("Suggested Owner", report)
         self.assertNotIn("Testing Needed", report)
         self.assertNotIn("#### Status", report)
+
+    def test_simplifies_workbook_evidence_for_reviewer_report(self) -> None:
+        source = {"filename": "mapping.xlsx"}
+        quote = (
+            "B7=additionalRemark | C7=N/A | D7=String | "
+            "A10=CMP_WCRM050105_009 | D10=Additional Remark"
+        )
+        self.assertEqual(
+            _report_evidence_value(source, quote),
+            "CMP_WCRM050105_009",
+        )
+        self.assertEqual(
+            _report_evidence_location(
+                source,
+                "Holiday Setup -> cell A10",
+            ),
+            "Holiday Setup",
+        )
 
     def test_rejects_quote_not_present_in_snapshot(self) -> None:
         finding = self._finding("br_traceability")
@@ -344,8 +378,12 @@ class ReviewWorkflowTests(unittest.TestCase):
         self.assertEqual(import_findings(self.review_dir, findings_path), 0)
         report = render_report(self.review_dir).read_text(encoding="utf-8")
         self.assertIn("NO GAPS FOUND", report)
-        self.assertIn("No gaps found.", report)
+        self.assertIn("No verified gaps found", report)
         self.assertIn("Review Summary", report)
+        self.assertNotIn("### Section Summary", report)
+        self.assertNotIn("Checks Performed", report)
+        self.assertNotIn("checks performed", report)
+        self.assertNotIn("Section Limitations", report)
         evidence = (self.review_dir / "evidence_snapshot.md").read_text(encoding="utf-8")
         self.assertIn("Original extracted detail", evidence)
         self.assertIn("The account number is required.", evidence)

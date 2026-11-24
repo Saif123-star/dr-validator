@@ -1044,6 +1044,47 @@ def _report_table_value(value: str) -> str:
     return " ".join(value.split()).replace("|", "\\|")
 
 
+def _is_workbook_source(source: dict[str, Any]) -> bool:
+    return Path(source["filename"]).suffix.casefold() in {
+        ".xls",
+        ".xlsx",
+        ".xlsm",
+        ".xlsb",
+    }
+
+
+def _report_workbook_value(value: str) -> str:
+    """Render workbook evidence as meaningful artifact identifiers only."""
+    identifiers = re.findall(
+        r"\b(?:CMP[_-][A-Za-z0-9_]+|ENT[_-][A-Za-z0-9_]+)\b",
+        value,
+    )
+    return ", ".join(dict.fromkeys(identifiers)) or "Workbook mapping"
+
+
+def _report_evidence_value(source: dict[str, Any], value: str) -> str:
+    if _is_workbook_source(source):
+        value = _report_workbook_value(value)
+    return _report_table_value(value)
+
+
+def _report_evidence_location(source: dict[str, Any], locator: str) -> str:
+    if _is_workbook_source(source):
+        locator = re.sub(
+            r"(?i)(?:cell|cells|range)\s*(?:[:=]\s*|\s+)"
+            r"\$?[A-Z]{1,3}\$?\d+(?:\s*[-:]\s*\$?[A-Z]{1,3}\$?\d+)?",
+            "",
+            locator,
+        )
+        locator = re.sub(
+            r"(?<![A-Za-z0-9_])!\$?[A-Z]{1,3}\$?\d+",
+            "!",
+            locator,
+        )
+        locator = re.sub(r"\s*(?:->|→|:)\s*$", "", locator)
+    return _report_table_value(locator).strip()
+
+
 def _report_comparison_value(value: str, conflicting: bool) -> str:
     rendered = _report_table_value(value)
     if any(
@@ -1605,65 +1646,54 @@ def _report_section_for_finding(finding: dict[str, Any]) -> str:
     return "cross_consistency"
 
 
-def _render_review_finding(
+def _finding_table_values(
     finding: dict[str, Any],
-    report_id: str,
     sources_by_id: dict[str, dict[str, Any]],
-) -> list[str]:
-    locations = _report_location_lines(finding, sources_by_id)
-    comparison_values = {
-        normalize_quote(evidence["quote"]) for evidence in finding["evidence"]
-    }
-    conflicting = len(comparison_values) > 1
-    lines = [
-        f"### {_SEVERITY_MARKERS[finding['severity']]} {report_id}",
-        f"#### {finding['title']}",
-        "",
-        f"**Finding Type:** {_report_category_label(finding)}",
-        f"**Category:** {finding['category']}",
-        "",
-        "##### Summary",
-        "",
-        finding["summary"],
-        "",
-        "##### Why This Finding Was Raised",
-        "",
-        _finding_reason(finding),
-        "",
-        "##### Business Impact",
-        "",
-        finding["impact"],
-        "",
-        "##### Source Comparison",
-        "",
-        "| Source | Review Location | Value |",
-        "|---|---|---|",
-    ]
+) -> tuple[str, str, str, str, str]:
+    evidence_by_label: dict[str, list[str]] = {}
+    locations: list[str] = []
     for evidence in finding["evidence"]:
         source = sources_by_id[evidence["source_id"]]
-        lines.append(
-            f"| {_report_source_label(source)} | "
-            f"{_report_table_value(evidence['locator'])} | "
-            f"{_report_comparison_value(evidence['quote'], conflicting)} |"
+        label = _report_source_label(source)
+        value = _report_evidence_value(source, evidence["quote"])
+        evidence_by_label.setdefault(label, []).append(value)
+        locations.append(
+            f"{label}: {source['filename']} -> "
+            f"{_report_evidence_location(source, evidence['locator'])}"
         )
-    lines.extend(["", "##### Review Location", ""])
-    for location in locations:
-        label, _, path = location.partition(" -> ")
-        lines.extend([f"- {label}", f"  - {path}"])
-    if not locations:
-        lines.append("- Location not specified in the finding evidence.")
-    lines.extend(["", "##### Affected Components", ""])
-    lines.extend(f"- {section}" for section in finding["affected_sections"])
-    lines.extend(
-        [
-            "",
-            "##### Review Comment",
-            "",
-            finding["recommendation"],
-            "",
+
+    source_labels = sorted(evidence_by_label)
+    source = " ↔ ".join(source_labels) if source_labels else "Not specified"
+    br_value = " / ".join(evidence_by_label.get("BR", []))
+    dr_value = " / ".join(evidence_by_label.get("DR", []))
+    other_values = [
+        f"{label}: {' / '.join(values)}"
+        for label, values in evidence_by_label.items()
+        if label not in {"BR", "DR"}
+    ]
+    if other_values:
+        workbook_sources = [
+            evidence["source_id"]
+            for evidence in finding["evidence"]
+            if _is_workbook_source(sources_by_id[evidence["source_id"]])
         ]
+        if workbook_sources:
+            references = " / ".join(other_values)
+            dr_value = (
+                f"{_report_table_value(finding['summary'])} "
+                f"({references})"
+            )
+        else:
+            dr_value = " / ".join(
+                value for value in [dr_value, *other_values] if value
+            )
+    return (
+        source,
+        br_value or "Not specified in cited evidence",
+        dr_value or "Not specified in cited evidence",
+        "<br>".join(dict.fromkeys(locations)) or "Not specified",
+        _report_table_value(finding["recommendation"]),
     )
-    return lines
 
 
 def _render_fixed_review_report(
@@ -1676,7 +1706,6 @@ def _render_fixed_review_report(
         key=_report_sort_key,
     )
     sources_by_id = {source["source_id"]: source for source in state["sources"]}
-    report_ids = _report_id_map(state["function_key"], findings)
     findings_by_section: dict[str, list[dict[str, Any]]] = {
         key: [] for _, key, _ in _REPORT_SECTIONS
     }
@@ -1717,38 +1746,35 @@ def _render_fixed_review_report(
         section_findings = findings_by_section[key]
         result = "Gaps found" if section_findings else "No gaps found"
         lines.append(f"| {title} | {len(section_findings)} | {result} |")
-    for title, key, checks in _REPORT_SECTIONS:
+    for title, key, _checks in _REPORT_SECTIONS:
         section_findings = findings_by_section[key]
-        lines.extend(["", f"## {title}", "", "### Checks Performed", ""])
-        lines.extend(f"- {check}" for check in checks)
-        lines.extend(["", "### Findings", ""])
+        lines.extend(["", f"## {title}", "", "### Findings", ""])
         if section_findings:
-            for finding in section_findings:
-                lines.extend(
-                    _render_review_finding(
-                        finding, report_ids[finding["finding_id"]], sources_by_id
-                    )
-                )
-        else:
-            lines.append("No gaps found.")
-        lines.extend(["", "### Section Result", ""])
-        lines.append(
-            f"{'Gaps found.' if section_findings else 'No gaps found across the checks performed.'}"
-        )
-        limitations = [
-            source["filename"]
-            for source in state["sources"]
-            if source["text_extraction"] not in {"available", "extracted"}
-        ]
-        if limitations:
             lines.extend(
                 [
                     "",
-                    "### Section Limitations",
-                    "",
-                    "The following source evidence was not fully extractable: "
-                    + ", ".join(limitations)
-                    + ".",
+                    "| No. | Severity | Finding | Source | BR Requirement | "
+                    "DR Requirement / Observation | Review Location | Recommended Action |",
+                    "|---:|---|---|---|---|---|---|---|",
+                ]
+            )
+            for number, finding in enumerate(section_findings, start=1):
+                source, br_value, dr_value, location, action = _finding_table_values(
+                    finding, sources_by_id
+                )
+                lines.append(
+                    f"| {number} | {finding['severity'].upper()} | "
+                    f"{_report_table_value(finding['title'])} | {source} | "
+                    f"{br_value} | {dr_value} | {location} | {action} |"
+                )
+        else:
+            lines.extend(
+                [
+                    "| ID | Severity | Finding | Source | BR Requirement | "
+                    "DR Requirement / Cross-Section Value | Review Location | "
+                    "Recommended Action |",
+                    "|---|---|---|---|---|---|---|---|",
+                    "| — | — | No verified gaps found | — | — | — | — | — |",
                 ]
             )
     lines.extend(

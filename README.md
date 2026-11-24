@@ -63,9 +63,9 @@ reviewers and reports any coverage limits. For a targeted review, select
 `technical_mapping` and `internal_consistency` to include these checks.
 After verification and any required reconciliation, the orchestrator creates
 `review_report.md` and `evidence_snapshot.md` in the review folder and presents
-the findings directly. The report uses readable finding IDs, source comparison
-tables, exact review locations, business impacts, suggested owners, testing
-guidance, and a development-readiness assessment. No user acceptance step is
+the findings directly. The report uses fixed section-wise tables with serial
+numbers, source comparisons, exact source and review locations, BR/DR values,
+and recommended actions. No user acceptance step is
 required. VS Code may prompt you to allow workflow tool calls.
 
 If you use VS Code's Local harness, the `/dr-review` prompt also accepts
@@ -225,8 +225,8 @@ conflicts have been reconciled.
 When the review reaches `completed`, the orchestrator automatically generates:
 
 - `review_report.md` — the reviewer-facing report with an executive summary,
-  readable finding IDs, source comparisons, exact locations, impacts, owners,
-  testing scenarios, statuses, and development readiness.
+  fixed review sections, serial-numbered finding tables, source comparisons,
+  exact locations, and recommended actions.
 - `evidence_snapshot.md` — original extracted source detail for reviewers.
 
 Both files remain under `runs/<FunctionKey>/reviews/<ReviewId>/`.
