@@ -47,7 +47,10 @@
         "properties": {
           "source_id": {"type": "string", "minLength": 1},
           "locator": {"type": "string", "minLength": 1},
-          "quote": {"type": "string", "minLength": 1}
+          "quote": {"type": "string", "minLength": 1},
+          "evidence_type": {
+            "enum": ["text", "visual_observation"]
+          }
         },
         "additionalProperties": false
       }

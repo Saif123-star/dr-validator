@@ -490,14 +490,30 @@ def _validate_finding(
             raise ValueError(f"Evidence refers to unknown source: {source_id}")
         locator = _string(item.get("locator"), "evidence.locator")
         quote = _string(item.get("quote"), "evidence.quote")
+        evidence_type = item.get("evidence_type", "text")
+        if evidence_type not in {"text", "visual_observation"}:
+            raise ValueError(
+                "evidence.evidence_type must be 'text' or 'visual_observation'"
+            )
         source_text = text_by_source.get(source_id, "")
-        if not source_text or normalize_quote(quote) not in normalize_quote(source_text):
+        source = sources_by_id[source_id]
+        is_visual_evidence = (
+            evidence_type == "visual_observation"
+            and source["text_extraction"] == "non_text"
+        )
+        if (
+            not is_visual_evidence
+            and (not source_text or normalize_quote(quote) not in normalize_quote(source_text))
+        ):
             raise ValueError(
                 f"Evidence quote was not found in source {source_id} at {locator!r}"
             )
-        checked_evidence.append(
-            {"source_id": source_id, "locator": locator, "quote": quote}
-        )
+        checked_evidence.append({
+            "source_id": source_id,
+            "locator": locator,
+            "quote": quote,
+            "evidence_type": evidence_type,
+        })
     finding["evidence"] = checked_evidence
     finding["reconciliation_required"] = False
     finding["verification"] = {
@@ -527,9 +543,17 @@ def _merge_group(items: list[dict[str, Any]], function_key: str, review_id: str)
                 reference["source_id"],
                 normalize_quote(reference["locator"]),
                 normalize_quote(reference["quote"]),
+                reference.get("evidence_type", "text"),
             )
             if signature not in seen_evidence:
-                evidence.append(reference)
+                evidence.append(
+                    {
+                        "source_id": reference["source_id"],
+                        "locator": reference["locator"],
+                        "quote": reference["quote"],
+                        "evidence_type": reference.get("evidence_type", "text"),
+                    }
+                )
                 seen_evidence.add(signature)
     severity_values = {item["severity"] for item in items}
     severity_conflict = len(severity_values) > 1

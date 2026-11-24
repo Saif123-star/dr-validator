@@ -10,6 +10,10 @@ same field, component, or endpoint in context, and check for documented
 exceptions or mappings that explain the difference. For an omission, confirm
 that the target sheet is expected to contain the entry.
 
+For `visual_observation` evidence, reopen the cited image and independently
+confirm the described visual observation and region. Do not convert a static
+image observation into a claim about runtime behavior.
+
 Return exactly one result per assigned finding using
 `schemas/review/verification_result.schema.json`:
 

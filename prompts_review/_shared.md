@@ -19,7 +19,8 @@ Return JSON with a top-level `findings` array. Each object must conform to
 `track`, `rule_id`, `title`, `severity`, `confidence`, `category`,
 `must_change`, `summary`, `impact`, `recommendation`, `evidence`,
 `related_sources`, `affected_sections`, `requires_human_decision`, and optional
-`decision_question`.
+`decision_question`. Evidence may also include `evidence_type` with
+`text` (the default) or `visual_observation` for image-only evidence.
 
 Use severity definitions from `config/review/severity_rules.yaml`. Only a
 critical/high issue or an explicitly justified medium issue should be
@@ -30,5 +31,7 @@ critical/high issue or an explicitly justified medium issue should be
 - Modify or overwrite source snapshots.
 - Publish, comment, or edit an external system.
 - Mark an unverified claim as confirmed.
+- Use `visual_observation` for anything that was observed in an image; do not
+  present it as extracted text.
 - Collapse multiple plausible recommendations before reconciliation.
 - Treat user approval as implicit.

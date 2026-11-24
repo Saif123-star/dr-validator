@@ -218,6 +218,35 @@ class ReviewWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "quote was not found"):
             import_findings(self.review_dir, findings_path)
 
+    def test_accepts_visual_observation_for_image_attachment(self) -> None:
+        attachments = self.root / "attachments"
+        attachments.mkdir()
+        (attachments / "screen.png").write_bytes(b"not-text-image")
+        review_dir = initialize_review(
+            function_key="FN007",
+            dr_path=self.dr,
+            br_path=self.br,
+            runs_dir=self.root / "runs",
+            attachments_dir=attachments,
+        )
+        finding = self._finding("ui_ux_context")
+        finding["evidence"] = [
+            {
+                "source_id": "SRC-ATT-0001",
+                "locator": "right side of the screen",
+                "quote": "No horizontal scroll affordance is visible.",
+                "evidence_type": "visual_observation",
+            }
+        ]
+        finding["affected_sections"] = ["PM stamp timeline"]
+        findings_path = self._write_json(
+            "visual-findings.json", {"findings": [finding]}
+        )
+        self.assertEqual(import_findings(review_dir, findings_path), 1)
+        report = render_report(review_dir).read_text(encoding="utf-8")
+        self.assertIn("No horizontal scroll affordance is visible.", report)
+        self.assertIn("UI Components", report)
+
     def test_rejects_modified_snapshot(self) -> None:
         dr_source = self.review_dir / "sources" / "SRC-DR-PAGE" / "dr.md"
         dr_source.write_text("changed after capture", encoding="utf-8")

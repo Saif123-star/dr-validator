@@ -25,7 +25,8 @@ use the `dr-review` command from any directory.
 ## Layout
 
 - `.github/agents/` — the `dr-reviewer` orchestrator (which may delegate and
-  run the workflow scripts) and five read-only specialist/verification agents
+  run the workflow scripts) and six read-only specialist/verification agents,
+  including `review-vision` for visual inspection of UI images
 - `.github/prompts/dr-review.prompt.md` — VS Code prompt to start a DR review
 - `config/review/` — pipeline stages, severity policy, evidence authority, and
   Confluence settings (`confluence.yaml`)
@@ -53,6 +54,10 @@ You do not run the individual prompts, agents, or import commands yourself.
 Full reviews check the DR against the BR and audit the DR itself: declared
 field lengths for the same field, references to every Item Description
 component, API contracts across worksheets, and cross-section contradictions.
+Captured UI images are additionally reviewed visually by `review-vision`;
+visual findings are merged into the UI Components section. Static images do not
+prove runtime interaction, API behavior, accessibility compliance, or
+responsive behavior.
 The orchestrator prepares a hash-checked `.xlsx` evidence view for the
 reviewers and reports any coverage limits. For a targeted review, select
 `technical_mapping` and `internal_consistency` to include these checks.
