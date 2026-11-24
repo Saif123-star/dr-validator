@@ -1267,7 +1267,7 @@ def _finding_reason(finding: dict[str, Any]) -> str:
     )
 
 
-def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
+def _render_action_report(review_dir: Path, output_path: Path | None = None) -> Path:
     """Render an action-oriented report for delivery to project reviewers."""
     state = _load_state(review_dir)
     render_evidence_snapshot(review_dir)
@@ -1470,6 +1470,286 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return report_path
+
+
+_REPORT_SECTIONS = (
+    (
+        "UI Components",
+        "ui_components",
+        (
+            "Compare UI component names, types, and identifiers across the DR "
+            "and component worksheets.",
+            "Check required, optional, visible, hidden, read-only, and editable states.",
+            "Check component validation, error, empty, and unavailable behavior.",
+            "Check every Item Description component against the relevant sheets.",
+        ),
+    ),
+    (
+        "Event Mapping with API",
+        "event_api",
+        (
+            "Check that every API-triggering UI event has a defined endpoint.",
+            "Compare event IDs, triggers, preconditions, processing, and postconditions.",
+            "Check request, response, error, confirmation, and retry behavior.",
+        ),
+    ),
+    (
+        "API Mapping with Events and UI Components",
+        "api_ui",
+        (
+            "Map API request and response fields to UI components and events.",
+            "Compare field names, types, requiredness, enums, and display values.",
+            "Check that UI behavior is supported by the declared API contract.",
+        ),
+    ),
+    (
+        "DR API Coverage",
+        "dr_api",
+        (
+            "Check that APIs used by the UI and worksheets are described in the DR.",
+            "Compare API methods, paths, purposes, parameters, responses, and errors.",
+            "Check API and event references for undefined or inconsistent identifiers.",
+        ),
+    ),
+    (
+        "Database Mapping with UI Components",
+        "ui_db",
+        (
+            "Map persisted UI fields to database entities and columns.",
+            "Compare length, datatype, mandatory, nullability, and default constraints.",
+            "Check that UI validation does not exceed database constraints.",
+        ),
+    ),
+    (
+        "Database Mapping with API",
+        "api_db",
+        (
+            "Map API request and response fields to database columns or derived values.",
+            "Compare API and database names, types, lengths, requiredness, and enums.",
+            "Check create, update, retrieve, keys, and persistence behavior.",
+        ),
+    ),
+    (
+        "DR Alignment with BR",
+        "br_alignment",
+        (
+            "Check every BR requirement and business rule has DR coverage.",
+            "Compare roles, validations, states, data requirements, and error behavior.",
+            "Check that DR behavior does not weaken or contradict the BR.",
+        ),
+    ),
+    (
+        "Cross-Section Consistency",
+        "cross_consistency",
+        (
+            "Compare the same components, fields, endpoints, roles, and states across layers.",
+            "Check lengths, datatypes, enums, labels, events, and error behavior.",
+            "Check references between DR, BR, UI, API, and database sheets.",
+        ),
+    ),
+)
+
+
+def _report_section_for_finding(finding: dict[str, Any]) -> str:
+    text = " ".join(
+        [
+            finding["track"],
+            finding["category"],
+            finding["title"],
+            finding["summary"],
+            " ".join(finding["affected_sections"]),
+        ]
+    ).casefold()
+    if finding["track"] == "br_traceability":
+        return "br_alignment"
+    if finding["track"] == "internal_consistency":
+        return "cross_consistency"
+    if "ui" in text and "db" in text:
+        return "ui_db"
+    if "api" in text and "db" in text:
+        return "api_db"
+    if "event" in text and "api" in text:
+        return "event_api"
+    if "api" in text and "dr" in text:
+        return "dr_api"
+    if "api" in text and "ui" in text:
+        return "api_ui"
+    if finding["track"] == "ui_ux_context":
+        return "ui_components"
+    if finding["track"] == "technical_mapping":
+        return "api_ui" if "api" in text else "ui_db"
+    return "cross_consistency"
+
+
+def _render_review_finding(
+    finding: dict[str, Any],
+    report_id: str,
+    sources_by_id: dict[str, dict[str, Any]],
+) -> list[str]:
+    locations = _report_location_lines(finding, sources_by_id)
+    comparison_values = {
+        normalize_quote(evidence["quote"]) for evidence in finding["evidence"]
+    }
+    conflicting = len(comparison_values) > 1
+    lines = [
+        f"### {_SEVERITY_MARKERS[finding['severity']]} {report_id}",
+        f"#### {finding['title']}",
+        "",
+        f"**Finding Type:** {_report_category_label(finding)}",
+        f"**Category:** {finding['category']}",
+        "",
+        "##### Summary",
+        "",
+        finding["summary"],
+        "",
+        "##### Why This Finding Was Raised",
+        "",
+        _finding_reason(finding),
+        "",
+        "##### Business Impact",
+        "",
+        finding["impact"],
+        "",
+        "##### Source Comparison",
+        "",
+        "| Source | Review Location | Value |",
+        "|---|---|---|",
+    ]
+    for evidence in finding["evidence"]:
+        source = sources_by_id[evidence["source_id"]]
+        lines.append(
+            f"| {_report_source_label(source)} | "
+            f"{_report_table_value(evidence['locator'])} | "
+            f"{_report_comparison_value(evidence['quote'], conflicting)} |"
+        )
+    lines.extend(["", "##### Review Location", ""])
+    for location in locations:
+        label, _, path = location.partition(" -> ")
+        lines.extend([f"- {label}", f"  - {path}"])
+    if not locations:
+        lines.append("- Location not specified in the finding evidence.")
+    lines.extend(["", "##### Affected Components", ""])
+    lines.extend(f"- {section}" for section in finding["affected_sections"])
+    lines.extend(
+        [
+            "",
+            "##### Review Comment",
+            "",
+            finding["recommendation"],
+            "",
+        ]
+    )
+    return lines
+
+
+def _render_fixed_review_report(
+    review_dir: Path, output_path: Path | None = None
+) -> Path:
+    state = _load_state(review_dir)
+    render_evidence_snapshot(review_dir)
+    findings = sorted(
+        _read_json(review_dir / "findings.json").get("findings", []),
+        key=_report_sort_key,
+    )
+    sources_by_id = {source["source_id"]: source for source in state["sources"]}
+    report_ids = _report_id_map(state["function_key"], findings)
+    findings_by_section: dict[str, list[dict[str, Any]]] = {
+        key: [] for _, key, _ in _REPORT_SECTIONS
+    }
+    for finding in findings:
+        findings_by_section[_report_section_for_finding(finding)].append(finding)
+    severity_counts = {
+        severity: sum(finding["severity"] == severity for finding in findings)
+        for severity in ("critical", "high", "medium", "low", "observation")
+    }
+    readiness = (
+        "Not Ready"
+        if severity_counts["critical"] or severity_counts["high"]
+        else "Ready with Conditions"
+        if findings
+        else "Ready"
+    )
+    lines = [
+        f"# DR Review Report: {state['function_key']}",
+        "",
+        "## Executive Summary",
+        "",
+        f"- Function Key: {state['function_key']}",
+        f"- Review ID: {state['review_id']}",
+        f"- Overall Status: {'REVIEW REQUIRED' if findings else 'NO GAPS FOUND'}",
+        f"- Total Findings: {len(findings)}",
+        f"- Must Change: {sum(finding['must_change'] for finding in findings)}",
+        f"- Should Change: {severity_counts['medium']}",
+        f"- Advisory: {severity_counts['low']}",
+        f"- Informational: {severity_counts['observation']}",
+        f"- Development Readiness: {readiness}",
+        "",
+        "## Review Sections",
+        "",
+        "| Review Section | Findings | Result |",
+        "|---|---:|---|",
+    ]
+    for title, key, _ in _REPORT_SECTIONS:
+        section_findings = findings_by_section[key]
+        result = "Gaps found" if section_findings else "No gaps found"
+        lines.append(f"| {title} | {len(section_findings)} | {result} |")
+    for title, key, checks in _REPORT_SECTIONS:
+        section_findings = findings_by_section[key]
+        lines.extend(["", f"## {title}", "", "### Checks Performed", ""])
+        lines.extend(f"- {check}" for check in checks)
+        lines.extend(["", "### Findings", ""])
+        if section_findings:
+            for finding in section_findings:
+                lines.extend(
+                    _render_review_finding(
+                        finding, report_ids[finding["finding_id"]], sources_by_id
+                    )
+                )
+        else:
+            lines.append("No gaps found.")
+        lines.extend(["", "### Section Result", ""])
+        lines.append(
+            f"{'Gaps found.' if section_findings else 'No gaps found across the checks performed.'}"
+        )
+        limitations = [
+            source["filename"]
+            for source in state["sources"]
+            if source["text_extraction"] not in {"available", "extracted"}
+        ]
+        if limitations:
+            lines.extend(
+                [
+                    "",
+                    "### Section Limitations",
+                    "",
+                    "The following source evidence was not fully extractable: "
+                    + ", ".join(limitations)
+                    + ".",
+                ]
+            )
+    lines.extend(
+        [
+            "",
+            "## Review Summary",
+            "",
+            (
+                "Review comments are listed in the sections above. "
+                "The review requires attention before development."
+                if findings
+                else "No review comments were raised. All configured checks found no gaps "
+                "in the available evidence."
+            ),
+        ]
+    )
+    report_path = output_path or review_dir / "review_report.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report_path
+
+
+def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
+    """Render the fixed reviewer-facing report format."""
+    return _render_fixed_review_report(review_dir, output_path)
 
 
 def render_review_comments(review_dir: Path, output_path: Path | None = None) -> Path:
