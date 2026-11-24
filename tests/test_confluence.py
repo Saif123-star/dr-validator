@@ -131,10 +131,16 @@ class RemoteSourceTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.fake = FakeConfluence()
-        self.fake.add_page("100", "DR", 3, "<p>The account number is required.</p>")
+        self.fake.add_page(
+            "100",
+            "DR",
+            3,
+            '<p>The account number is required.</p><ac:image><ri:attachment ri:filename="screen:1.png" /></ac:image>',
+        )
         self.fake.add_page("200", "BR", 8, "<p>Account number must be provided.</p>")
         self.fake.attachments["100"] = [
-            (ConfluenceAttachment("att1", "screen:1.png", "/download/att1", version=2), b"png")
+            (ConfluenceAttachment("att1", "screen:1.png", "/download/att1", version=2), b"png"),
+            (ConfluenceAttachment("old1", "old-screen.png", "/download/old1", version=1), b"old"),
         ]
 
     def tearDown(self) -> None:
@@ -155,6 +161,58 @@ class RemoteSourceTests(unittest.TestCase):
         self.assertEqual(sources["SRC-ATT-0001"]["attachment_id"], "att1")
         self.assertEqual(sources["SRC-ATT-0001"]["filename"], "screen_1.png")
         self.assertEqual(sources["SRC-DR-PAGE"]["text_extraction"], "extracted")
+        self.assertEqual(
+            {source["attachment_id"] for source in sources.values() if "attachment_id" in source},
+            {"att1"},
+        )
+
+    def test_captures_referenced_attachments_from_both_pages(self) -> None:
+        self.fake.add_page(
+            "200",
+            "BR",
+            8,
+            '<p>Account number must be provided.</p><a href="/download/attachments/200/terms%20and%20conditions.pdf?version=2">Terms</a>',
+        )
+        self.fake.attachments["200"] = [
+            (
+                ConfluenceAttachment(
+                    "br1", "terms and conditions.pdf", "/download/br1", version=2
+                ),
+                b"terms",
+            ),
+            (ConfluenceAttachment("old2", "old-terms.pdf", "/download/old2"), b"old"),
+        ]
+        review_dir = initialize_review_from_sources(
+            "FN001",
+            PageSource(page_id="100"),
+            PageSource(page_id="200"),
+            client=self.fake,
+            runs_dir=self.root / "runs",
+        )
+        state = read_json(review_dir / "state.json")
+        attachment_ids = {
+            source["attachment_id"]
+            for source in state["sources"]
+            if "attachment_id" in source
+        }
+        self.assertEqual(attachment_ids, {"att1", "br1"})
+
+    def test_fails_when_page_references_an_unattached_file(self) -> None:
+        self.fake.add_page(
+            "100",
+            "DR",
+            3,
+            '<ri:attachment ri:filename="missing.png" />',
+        )
+        with self.assertRaisesRegex(ConfluenceError, "missing.png"):
+            initialize_review_from_sources(
+                "FN001",
+                PageSource(page_id="100"),
+                PageSource(page_id="200"),
+                client=self.fake,
+                runs_dir=self.root / "runs",
+            )
+        self.assertFalse((self.root / "runs" / "FN001" / "reviews" / "R001").exists())
 
     def test_rejects_version_mismatch(self) -> None:
         with self.assertRaisesRegex(ConfluenceError, "version 3"):

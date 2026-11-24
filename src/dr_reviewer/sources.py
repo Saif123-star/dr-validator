@@ -6,8 +6,10 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from .confluence import (
     ConfluenceClient,
@@ -27,6 +29,34 @@ _WINDOWS_RESERVED = {
     *(f"lpt{index}" for index in range(1, 10)),
 }
 _MAX_FILENAME = 120
+
+
+class _AttachmentReferenceParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.filenames: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        filename = attributes.get("ri:filename")
+        if filename:
+            self.filenames.add(unquote(filename))
+
+        href = attributes.get("href")
+        if href:
+            path = urlsplit(href).path
+            marker = "/download/attachments/"
+            if marker in path:
+                filename = path.split(marker, 1)[1].rsplit("/", 1)[-1]
+                if filename:
+                    self.filenames.add(unquote(filename))
+
+
+def _referenced_attachment_filenames(body_storage: str) -> set[str]:
+    parser = _AttachmentReferenceParser()
+    parser.feed(body_storage)
+    parser.close()
+    return parser.filenames
 
 
 @dataclass(frozen=True)
@@ -95,10 +125,27 @@ class ConfluenceSourceFetcher:
         write_text(snapshot, page.body_storage)
         return snapshot, str(page.version), page.web_url
 
-    def fetch_attachments(self, page_id: str) -> list[FetchedAttachment]:
-        page_id = require_numeric_id(page_id, "DR page ID")
+    def fetch_attachments(self, page_id: str, body_storage: str) -> list[FetchedAttachment]:
+        page_id = require_numeric_id(page_id, "Confluence page ID")
+        referenced_filenames = _referenced_attachment_filenames(body_storage)
+        if not referenced_filenames:
+            return []
+
+        attachments = self._client.list_attachments(page_id)
+        selected = [
+            attachment
+            for attachment in attachments
+            if attachment.title in referenced_filenames
+        ]
+        missing = referenced_filenames - {attachment.title for attachment in selected}
+        if missing:
+            names = ", ".join(sorted(missing))
+            raise ConfluenceError(
+                f"Page {page_id} references attachment(s) not found on that page: {names}"
+            )
+
         fetched: list[FetchedAttachment] = []
-        for attachment in self._client.list_attachments(page_id):
+        for attachment in selected:
             attachment_id = re.sub(r"[^A-Za-z0-9_-]", "_", attachment.attachment_id)
             directory = self._workspace / "attachments" / attachment_id
             directory.mkdir(parents=True, exist_ok=False)
@@ -166,15 +213,22 @@ def initialize_review_from_sources(
     try:
         fetcher = ConfluenceSourceFetcher(gateway, workspace)
         resolved: dict[str, tuple[Path, str | None, str | None, str]] = {}
+        page_bodies: dict[str, str] = {}
         for label, source in (("DR", dr), ("BR", br)):
             if source.is_remote:
                 path, version, url = fetcher.fetch_page(
                     page_ids[label] or "", label, source.version
                 )
                 resolved[label] = (path, version, source.url or url, "confluence")
+                page_bodies[label] = path.read_text(encoding="utf-8")
             else:
                 resolved[label] = (source.path, source.version, source.url, "local")  # type: ignore[assignment]
-        attachments = fetcher.fetch_attachments(page_ids["DR"] or "") if dr.is_remote else []
+        attachments: list[FetchedAttachment] = []
+        for label, source in (("DR", dr), ("BR", br)):
+            if source.is_remote:
+                attachments.extend(
+                    fetcher.fetch_attachments(page_ids[label] or "", page_bodies[label])
+                )
         dr_path, dr_version, dr_url, dr_origin = resolved["DR"]
         br_path, br_version, br_url, br_origin = resolved["BR"]
         return initialize_review(

@@ -109,10 +109,12 @@ python scripts/review/init_dr_review.py --function-key WSMB010104 `
 ```
 
 The storage-format body of each page is saved as an HTML snapshot with its
-current version, and every DR page attachment is downloaded as an attachment
-source. Pass `--dr-version`/`--br-version` to pin a version; capture fails if
-the page has moved on. Local and Confluence sources can be mixed, for example
-a Confluence DR with a local `--br` file. Review tracks only read the snapshot.
+current version. Only attachments linked or embedded in those captured page
+bodies are downloaded as attachment sources; older, unreferenced attachments
+are excluded. Pass `--dr-version`/`--br-version` to pin a version; capture
+fails if the page has moved on. Local and Confluence sources can be mixed, for
+example a Confluence DR with a local `--br` file. Review tracks only read the
+snapshot.
 
 You can also pass the full Confluence page URLs:
 
