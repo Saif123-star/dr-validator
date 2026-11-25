@@ -1,6 +1,6 @@
 # DR Validator
 
-<<<<<<< HEAD
+
 DR Validator is a read-only Design Requirement (DR) review system. It reviews
 a DR against its Business Requirement (BR), attached workbooks, documents, and
 UI images. It checks traceability, UI details, events, APIs, database
@@ -29,12 +29,12 @@ files define specialist instructions for VS Code; the CLI does not
 autonomously launch agents. Semantic verification remains independent human
 or agent work. Confluence is read-only: the DR is never edited and review
 results are never written back to Confluence.
->>>>>>> dev1
+
 
 ## Requirements
 
 - Python 3.12 or newer
-<<<<<<< HEAD
+
 - PyYAML 6.0 or newer
 - VS Code with Copilot agent support for the orchestrated review
 
@@ -243,7 +243,7 @@ If you use VS Code's Local harness, the `/dr-review` prompt also accepts
 the same inputs directly in chat. The Python CLI alone does not invoke agents.
 
 ## Manual CLI reference
->>>>>>> dev1
+
 
 ```powershell
 python scripts/review/init_dr_review.py `
@@ -251,7 +251,7 @@ python scripts/review/init_dr_review.py `
   --dr .\input\published-dr.docx `
   --br .\input\business-requirements.docx `
   --attachments .\input\attachments `
-<<<<<<< HEAD
+
   --runs-dir .\runs
 ```
 
@@ -327,7 +327,7 @@ not OCR-processed. PDF and legacy Office files are retained but marked as
 unsupported for text extraction.
 
 For targeted reviews, supply at least one track:
->>>>>>> dev1
+
 
 ```powershell
 python -m dr_reviewer workbook-evidence `
@@ -346,7 +346,6 @@ python -m dr_reviewer status `
 For Confluence capture, configure the required environment values without
 printing or committing them:
 
-<<<<<<< HEAD
 - `CONFLUENCE_BASE_URL`
 - `CONFLUENCE_EMAIL`
 - `CONFLUENCE_API_TOKEN`
@@ -444,7 +443,7 @@ Confluence is read-only and used only to capture source pages and attachments.
 The workflow never creates Confluence pages or comments and never edits the DR.
 Evidence citation checks are deterministic; they do not replace semantic
 verification.
->>>>>>> dev1
+
 
 ## Tests
 
