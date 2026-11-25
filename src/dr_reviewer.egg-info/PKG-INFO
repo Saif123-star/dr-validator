@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: dr-reviewer
+Version: 0.2.0
+Summary: Design-requirement review workflow with human-approved Confluence review-page publication
+Requires-Python: >=3.12
+Requires-Dist: PyYAML>=6.0

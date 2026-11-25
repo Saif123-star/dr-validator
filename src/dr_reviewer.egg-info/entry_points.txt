@@ -1,0 +1,2 @@
+[console_scripts]
+dr-review = dr_reviewer.cli:main
