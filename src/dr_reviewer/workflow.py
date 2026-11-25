@@ -2,25 +2,40 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .documents import extract_text, normalize_quote
-
-
-TRACKS = (
-    "document_integrity",
-    "br_traceability",
-    "internal_consistency",
-    "ui_ux_context",
-    "technical_mapping",
+from .config import (
+    PIPELINE_CONFIG,
+    REPOSITORY_ROOT,
+    SEVERITY_CONFIG,
+    SOURCE_AUTHORITY_CONFIG,
 )
-SEVERITIES = ("critical", "high", "medium", "low", "observation")
+from .documents import extract_text, normalize_quote
+from .storage import load_state as _load_state
+from .storage import read_json as _read_json
+from .storage import save_state as _save_state
+from .storage import sha256_file as _sha256
+from .storage import utc_now as _now
+from .storage import write_json as _write_json
+from .storage import write_text
+
+if TYPE_CHECKING:
+    from .sources import FetchedAttachment
+
+
+TRACKS = tuple(PIPELINE_CONFIG["tracks"])
+SEVERITIES = tuple(
+    severity
+    for severity, _ in sorted(
+        SEVERITY_CONFIG["levels"].items(),
+        key=lambda item: item[1]["rank"],
+    )
+)
 CONFIDENCE_LEVELS = ("high", "medium", "low")
 VERDICTS = (
     "verified",
@@ -40,111 +55,41 @@ DECISIONS = (
     "accepted_risk",
 )
 _FUNCTION_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-_SEVERITY_RANK = {severity: index for index, severity in enumerate(SEVERITIES)}
-_FINDING_SCHEMA = {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "required": ["findings"],
-    "properties": {
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": [
-                    "track",
-                    "rule_id",
-                    "title",
-                    "severity",
-                    "confidence",
-                    "category",
-                    "must_change",
-                    "summary",
-                    "impact",
-                    "recommendation",
-                    "evidence",
-                    "affected_sections",
-                    "requires_human_decision",
-                ],
-                "properties": {
-                    "track": {"enum": list(TRACKS)},
-                    "rule_id": {"type": "string", "minLength": 1},
-                    "title": {"type": "string", "minLength": 1},
-                    "severity": {"enum": list(SEVERITIES)},
-                    "confidence": {"enum": list(CONFIDENCE_LEVELS)},
-                    "category": {"type": "string", "minLength": 1},
-                    "must_change": {"type": "boolean"},
-                    "summary": {"type": "string", "minLength": 1},
-                    "impact": {"type": "string", "minLength": 1},
-                    "recommendation": {"type": "string", "minLength": 1},
-                    "evidence": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "required": ["source_id", "locator", "quote"],
-                            "properties": {
-                                "source_id": {"type": "string", "minLength": 1},
-                                "locator": {"type": "string", "minLength": 1},
-                                "quote": {"type": "string", "minLength": 1},
-                            },
-                        },
-                    },
-                    "related_sources": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                    },
-                    "affected_sections": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {"type": "string", "minLength": 1},
-                    },
-                    "requires_human_decision": {"type": "boolean"},
-                    "decision_question": {"type": ["string", "null"]},
-                },
-            },
-        }
-    },
+_SEVERITY_RANK = {
+    severity: config["rank"]
+    for severity, config in SEVERITY_CONFIG["levels"].items()
 }
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
-            json.dump(data, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink()
-
-
-def _read_json(path: Path) -> Any:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Unable to read valid JSON from {path}") from exc
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+_FINDING_SCHEMA = json.loads(
+    (REPOSITORY_ROOT / "schemas" / "review" / "finding.schema.json").read_text(
+        encoding="utf-8"
+    )
+)
+_VERIFICATION_SCHEMA = json.loads(
+    (
+        REPOSITORY_ROOT
+        / "schemas"
+        / "review"
+        / "verification_result.schema.json"
+    ).read_text(encoding="utf-8")
+)
+_DECISION_SCHEMA = json.loads(
+    (REPOSITORY_ROOT / "schemas" / "review" / "decision.schema.json").read_text(
+        encoding="utf-8"
+    )
+)
+_REVIEW_STATE_SCHEMA = json.loads(
+    (REPOSITORY_ROOT / "schemas" / "review" / "review_state.schema.json").read_text(
+        encoding="utf-8"
+    )
+)
+_SOURCE_REGISTRY_SCHEMA = json.loads(
+    (
+        REPOSITORY_ROOT
+        / "schemas"
+        / "review"
+        / "source_registry.schema.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 def _require_file(path: Path, label: str) -> Path:
@@ -175,15 +120,19 @@ def _source_record(
     page_id: str | None = None,
     version: str | None = None,
     url: str | None = None,
+    origin: str = "local",
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_dir = stage / "sources" / source_id
     source_dir.mkdir(parents=True)
     snapshot = source_dir / source_path.name
     shutil.copy2(source_path, snapshot)
     _, extraction_status = extract_text(snapshot)
+    authority = SOURCE_AUTHORITY_CONFIG["source_types"].get(source_type, {})
     return {
         "source_id": source_id,
         "type": source_type,
+        "origin": origin,
         "filename": source_path.name,
         "snapshot_path": snapshot.relative_to(stage).as_posix(),
         "sha256": _sha256(snapshot),
@@ -194,8 +143,9 @@ def _source_record(
         "page_id": page_id,
         "version": version,
         "url": url,
-        "authoritative_for": authoritative_for,
-        "applicable_tracks": tracks,
+        "authoritative_for": authority.get("authoritative_for", authoritative_for),
+        "applicable_tracks": authority.get("applicable_tracks", tracks),
+        **(extra or {}),
     }
 
 
@@ -214,6 +164,10 @@ def initialize_review(
     br_version: str | None = None,
     br_url: str | None = None,
     reviewer: str | None = None,
+    context_sources: list[tuple[str, Path]] | None = None,
+    dr_origin: str = "local",
+    br_origin: str = "local",
+    confluence_attachments: Sequence[FetchedAttachment] = (),
 ) -> Path:
     if not _FUNCTION_KEY.fullmatch(function_key):
         raise ValueError("Function Key must be 1-64 letters, digits, underscores, or hyphens")
@@ -245,6 +199,17 @@ def initialize_review(
                 raise ValueError(f"Symbolic links are not allowed in attachments: {item}")
             if item.is_file():
                 attachment_files.append(item.resolve())
+    remote_attachments = [
+        (_require_file(attachment.path, "Confluence attachment"), attachment)
+        for attachment in confluence_attachments
+    ]
+    validated_context: list[tuple[str, Path]] = []
+    for source_type, source_path in context_sources or []:
+        if source_type not in SOURCE_AUTHORITY_CONFIG["source_types"]:
+            raise ValueError(f"Unknown local context source type: {source_type}")
+        validated_context.append(
+            (source_type, _require_file(source_path, f"{source_type} source"))
+        )
 
     function_dir = runs_dir / function_key
     reviews_dir = function_dir / "reviews"
@@ -265,6 +230,7 @@ def initialize_review(
                 page_id=dr_page_id,
                 version=dr_version,
                 url=dr_url,
+                origin=dr_origin,
             ),
             _source_record(
                 stage,
@@ -276,6 +242,7 @@ def initialize_review(
                 page_id=br_page_id,
                 version=br_version,
                 url=br_url,
+                origin=br_origin,
             ),
         ]
         for index, source_path in enumerate(attachment_files, start=1):
@@ -287,6 +254,35 @@ def initialize_review(
                     source_path,
                     ["attachment_content"],
                     ["document_integrity", "ui_ux_context", "technical_mapping"],
+                )
+            )
+        for index, (source_path, attachment) in enumerate(
+            remote_attachments, start=len(attachment_files) + 1
+        ):
+            sources.append(
+                _source_record(
+                    stage,
+                    f"SRC-ATT-{index:04d}",
+                    "attachment",
+                    source_path,
+                    ["attachment_content"],
+                    ["document_integrity", "ui_ux_context", "technical_mapping"],
+                    page_id=attachment.parent_page_id,
+                    version=attachment.version,
+                    url=attachment.url,
+                    origin="confluence",
+                    extra={"attachment_id": attachment.attachment_id},
+                )
+            )
+        for index, (source_type, source_path) in enumerate(validated_context, start=1):
+            sources.append(
+                _source_record(
+                    stage,
+                    f"SRC-CONTEXT-{index:04d}",
+                    source_type,
+                    source_path,
+                    [],
+                    [],
                 )
             )
 
@@ -317,6 +313,12 @@ def initialize_review(
         _write_json(stage / "agent_findings.template.json", {"findings": []})
         _write_json(stage / "finding.schema.json", _FINDING_SCHEMA)
         _write_json(stage / "verification.template.json", {"verifications": []})
+        _write_json(stage / "verification_result.schema.json", _VERIFICATION_SCHEMA)
+        _write_json(stage / "decision.schema.json", _DECISION_SCHEMA)
+        _write_json(stage / "review_state.schema.json", _REVIEW_STATE_SCHEMA)
+        _write_json(stage / "source_registry.schema.json", _SOURCE_REGISTRY_SCHEMA)
+        _write_json(stage / "decision.template.json", {"decisions": []})
+        _write_json(stage / "reconciliation.template.json", {"reconciliations": []})
         _write_brief(stage / "review_brief.md", state)
         stage.rename(review_dir)
     except Exception:
@@ -324,18 +326,6 @@ def initialize_review(
             shutil.rmtree(stage)
         raise
     return review_dir
-
-
-def _load_state(review_dir: Path) -> dict[str, Any]:
-    state = _read_json(review_dir / "state.json")
-    if not isinstance(state, dict) or state.get("schema_version") != 1:
-        raise ValueError(f"{review_dir} is not a supported review directory")
-    return state
-
-
-def _save_state(review_dir: Path, state: dict[str, Any]) -> None:
-    state["updated_at"] = _now()
-    _write_json(review_dir / "state.json", state)
 
 
 def _source_text(review_dir: Path, source: dict[str, Any]) -> str:
@@ -352,7 +342,8 @@ def _source_text(review_dir: Path, source: dict[str, Any]) -> str:
 def _write_brief(path: Path, state: dict[str, Any]) -> None:
     source_lines = [
         f"- `{source['source_id']}` ({source['type']}): {source['filename']} "
-        f"— SHA-256 `{source['sha256']}`, extraction `{source['text_extraction']}`"
+        f"— snapshot `{source['snapshot_path']}`, "
+        f"extraction `{source['text_extraction']}`"
         for source in state["sources"]
     ]
     body = [
@@ -374,9 +365,13 @@ def _write_brief(path: Path, state: dict[str, Any]) -> None:
         "## Specialist review instructions",
         "Return only evidence-backed findings in `agent_findings.template.json`.",
         "Use `finding.schema.json` for the required fields and allowed values.",
+        "Use `verification.template.json` with `verification_result.schema.json`",
+        "for independent verification results.",
         "Every finding must cite one or more source IDs with a locator and an exact quote.",
         "Do not invent APIs, database mappings, requirements, or missing evidence.",
         "Use the declared track names and severity levels shown in the template.",
+        "Default source precedence: "
+        + " > ".join(SOURCE_AUTHORITY_CONFIG["precedence"]),
         "The workflow checks citation text and merges duplicates; it does not perform",
         "semantic review or automatically launch specialist agents.",
         "",
@@ -407,16 +402,18 @@ def _string_list(value: Any, label: str, allow_empty: bool = False) -> list[str]
 
 
 def _finding_key(finding: dict[str, Any]) -> str:
-    locator = min(
-        (normalize_quote(item["locator"]) for item in finding["evidence"]),
-        default="",
+    evidence_refs = "|".join(
+        sorted(
+            f"{item['source_id']}:{normalize_quote(item['locator'])}"
+            for item in finding["evidence"]
+        )
     )
     sections = "|".join(sorted(normalize_quote(item) for item in finding["affected_sections"]))
     return "|".join(
         (
             normalize_quote(finding["rule_id"]),
             normalize_quote(finding["category"]),
-            locator,
+            evidence_refs,
             sections,
         )
     )
@@ -452,6 +449,13 @@ def _validate_finding(
 
     if not isinstance(value.get("must_change"), bool):
         raise ValueError("finding.must_change must be a boolean")
+    if (
+        SEVERITY_CONFIG["levels"][finding["severity"]]["must_change_default"]
+        and not value["must_change"]
+    ):
+        raise ValueError(
+            f"Severity '{finding['severity']}' requires must_change=true"
+        )
     if not isinstance(value.get("requires_human_decision"), bool):
         raise ValueError("finding.requires_human_decision must be a boolean")
     finding["must_change"] = value["must_change"]
@@ -486,14 +490,30 @@ def _validate_finding(
             raise ValueError(f"Evidence refers to unknown source: {source_id}")
         locator = _string(item.get("locator"), "evidence.locator")
         quote = _string(item.get("quote"), "evidence.quote")
+        evidence_type = item.get("evidence_type", "text")
+        if evidence_type not in {"text", "visual_observation"}:
+            raise ValueError(
+                "evidence.evidence_type must be 'text' or 'visual_observation'"
+            )
         source_text = text_by_source.get(source_id, "")
-        if not source_text or normalize_quote(quote) not in normalize_quote(source_text):
+        source = sources_by_id[source_id]
+        is_visual_evidence = (
+            evidence_type == "visual_observation"
+            and source["text_extraction"] == "non_text"
+        )
+        if (
+            not is_visual_evidence
+            and (not source_text or normalize_quote(quote) not in normalize_quote(source_text))
+        ):
             raise ValueError(
                 f"Evidence quote was not found in source {source_id} at {locator!r}"
             )
-        checked_evidence.append(
-            {"source_id": source_id, "locator": locator, "quote": quote}
-        )
+        checked_evidence.append({
+            "source_id": source_id,
+            "locator": locator,
+            "quote": quote,
+            "evidence_type": evidence_type,
+        })
     finding["evidence"] = checked_evidence
     finding["reconciliation_required"] = False
     finding["verification"] = {
@@ -523,9 +543,17 @@ def _merge_group(items: list[dict[str, Any]], function_key: str, review_id: str)
                 reference["source_id"],
                 normalize_quote(reference["locator"]),
                 normalize_quote(reference["quote"]),
+                reference.get("evidence_type", "text"),
             )
             if signature not in seen_evidence:
-                evidence.append(reference)
+                evidence.append(
+                    {
+                        "source_id": reference["source_id"],
+                        "locator": reference["locator"],
+                        "quote": reference["quote"],
+                        "evidence_type": reference.get("evidence_type", "text"),
+                    }
+                )
                 seen_evidence.add(signature)
     severity_values = {item["severity"] for item in items}
     severity_conflict = len(severity_values) > 1
@@ -569,12 +597,14 @@ def _merge_group(items: list[dict[str, Any]], function_key: str, review_id: str)
 
 
 def import_findings(review_dir: Path, findings_path: Path) -> int:
+    return merge_findings(review_dir, findings_path)
+
+
+def _read_findings_input(
+    review_dir: Path,
+    findings_path: Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     state = _load_state(review_dir)
-    if state["status"] not in {"sources_ready", "reviewing"}:
-        raise ValueError("Findings can only be imported before verification and decisions")
-    existing = _read_json(review_dir / "findings.json").get("findings", [])
-    if existing:
-        raise ValueError("Findings already exist; do not overwrite a reviewed finding set")
     payload = _read_json(findings_path)
     values = payload.get("findings") if isinstance(payload, dict) else payload
     if not isinstance(values, list):
@@ -588,6 +618,27 @@ def import_findings(review_dir: Path, findings_path: Path) -> int:
     validated = [
         _validate_finding(value, sources_by_id, text_by_source) for value in values
     ]
+    for finding in validated:
+        if finding["track"] not in state["tracks"]:
+            raise ValueError(
+                f"Finding track {finding['track']} is outside the confirmed review scope"
+            )
+    return state, validated
+
+
+def validate_findings(review_dir: Path, findings_path: Path) -> int:
+    _, validated = _read_findings_input(review_dir, findings_path)
+    return len(validated)
+
+
+def merge_findings(review_dir: Path, findings_path: Path) -> int:
+    state = _load_state(review_dir)
+    if state["status"] not in {"sources_ready", "reviewing"}:
+        raise ValueError("Findings can only be imported before verification and decisions")
+    existing = _read_json(review_dir / "findings.json").get("findings", [])
+    if existing:
+        raise ValueError("Findings already exist; do not overwrite a reviewed finding set")
+    _, validated = _read_findings_input(review_dir, findings_path)
     groups: dict[str, list[dict[str, Any]]] = {}
     for finding in validated:
         groups.setdefault(_finding_key(finding), []).append(finding)
@@ -599,7 +650,106 @@ def import_findings(review_dir: Path, findings_path: Path) -> int:
     state["status"] = "verifying" if merged else "completed"
     state["finding_count"] = len(merged)
     _save_state(review_dir, state)
+    if state["status"] == "completed":
+        render_report(review_dir)
     return len(merged)
+
+
+def build_source_registry(review_dir: Path, output_path: Path | None = None) -> Path:
+    state = _load_state(review_dir)
+    for source in state["sources"]:
+        _source_text(review_dir, source)
+    registry = {"sources": state["sources"]}
+    registry_path = output_path or review_dir / "manifest.json"
+    _write_json(registry_path, registry)
+    return registry_path
+
+
+def export_workbook_evidence(review_dir: Path) -> Path:
+    """Write a read-only text view of captured DR workbooks for review agents."""
+    state = _load_state(review_dir)
+    workbooks: list[str] = []
+    for source in state["sources"]:
+        if source["type"] not in {"dr_page", "attachment"}:
+            continue
+        if Path(source["snapshot_path"]).suffix.casefold() != ".xlsx":
+            continue
+        text = _source_text(review_dir, source)
+        workbooks.append(f"Source: {source['source_id']} ({source['filename']})\n{text}")
+    output = review_dir / "workbook_evidence.txt"
+    content = (
+        "\n\n".join(workbooks) + "\n"
+        if workbooks
+        else "No captured DR .xlsx workbooks. Check the manifest for unavailable formats.\n"
+    )
+    write_text(output, content)
+    return output
+
+
+def render_evidence_snapshot(
+    review_dir: Path, output_path: Path | None = None
+) -> Path:
+    """Write the extracted source content used as the review evidence view."""
+    state = _load_state(review_dir)
+    lines = [
+        f"# Evidence snapshot: {state['function_key']} / {state['review_id']}",
+        "",
+        "This file contains the original extracted detail from the locked local "
+        "source snapshots. Integrity hashes remain in `manifest.json` and are "
+        "not used as a substitute for source content.",
+        "",
+    ]
+    for source in state["sources"]:
+        lines.extend(
+            [
+                f"## {source['source_id']}: {source['filename']}",
+                "",
+                f"- Type: `{source['type']}`",
+                f"- Snapshot: `{source['snapshot_path']}`",
+                f"- Extraction: `{source['text_extraction']}`",
+            ]
+        )
+        if source.get("page_id"):
+            lines.append(f"- Page ID: `{source['page_id']}`")
+        if source.get("version"):
+            lines.append(f"- Version: `{source['version']}`")
+        lines.extend(["", "### Original extracted detail", ""])
+        detail = _source_text(review_dir, source).rstrip()
+        if detail:
+            lines.extend(["```text", detail or "[Source contained no extracted text.]", "```"])
+        else:
+            lines.append(
+                "[Original binary/image content is retained in the snapshot, "
+                "but text extraction is unavailable.]"
+            )
+        lines.append("")
+    snapshot_path = output_path or review_dir / "evidence_snapshot.md"
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return snapshot_path
+
+
+def _advance_after_verification(
+    state: dict[str, Any], findings: list[dict[str, Any]]
+) -> None:
+    if any(finding["verification"].get("verdict") is None for finding in findings):
+        state["status"] = "verifying"
+        return
+    terminal_verdicts = {"rejected", "duplicate", "insufficient_evidence"}
+    for finding in findings:
+        if finding["verification"].get("verdict") in terminal_verdicts:
+            finding["reconciliation_required"] = False
+    actionable = [
+        finding
+        for finding in findings
+        if finding["verification"].get("verdict") not in terminal_verdicts
+    ]
+    if not actionable:
+        state["status"] = "completed"
+    elif any(finding.get("reconciliation_required") for finding in actionable):
+        state["status"] = "reconciling"
+    else:
+        state["status"] = "completed"
 
 
 def import_verifications(review_dir: Path, verification_path: Path) -> int:
@@ -630,28 +780,333 @@ def import_verifications(review_dir: Path, verification_path: Path) -> int:
             raise ValueError(f"Unknown verification verdict: {verdict}")
         rationale = _string(value.get("rationale"), "verification.rationale")
         finding = findings_by_id[finding_id]
+        if finding["verification"].get("verdict") is not None:
+            raise ValueError(f"Finding already has a verification: {finding_id}")
+        severity = value.get("severity")
+        severity_changed = False
+        if severity is not None:
+            if not isinstance(severity, str) or severity.casefold() not in SEVERITIES:
+                raise ValueError(f"Unknown verification severity: {severity}")
+            severity = severity.casefold()
+            if severity != finding["severity"]:
+                finding["severity"] = severity
+                finding["reconciliation_required"] = True
+                severity_changed = True
+        elif verdict in {"downgraded", "upgraded"}:
+            raise ValueError(f"Verification verdict '{verdict}' requires a severity")
         finding["verification"]["verdict"] = verdict
         finding["verification"]["rationale"] = rationale
+        finding["verification"]["severity"] = severity
+        finding["verification"]["severity_changed"] = severity_changed
         if value.get("duplicate_of") is not None:
             finding["verification"]["duplicate_of"] = _string(
                 value["duplicate_of"], "verification.duplicate_of"
             )
 
+    _advance_after_verification(state, findings)
     _write_json(review_dir / "findings.json", findings_payload)
-    state["status"] = "awaiting_decisions"
     _save_state(review_dir, state)
+    if state["status"] == "completed":
+        render_report(review_dir)
+    return len(values)
+
+
+def import_reconciliations(review_dir: Path, reconciliation_path: Path) -> int:
+    state = _load_state(review_dir)
+    payload = _read_json(review_dir / "findings.json")
+    findings = payload.get("findings", [])
+    if not findings:
+        raise ValueError("There are no findings to reconcile")
+    if any(finding["verification"].get("verdict") is None for finding in findings):
+        raise ValueError("Every finding must be independently verified before reconciliation")
+
+    reconciliation_payload = _read_json(reconciliation_path)
+    values = (
+        reconciliation_payload.get("reconciliations")
+        if isinstance(reconciliation_payload, dict)
+        else None
+    )
+    if not isinstance(values, list) or not values:
+        raise ValueError("Reconciliation input must contain a reconciliations list")
+    findings_by_id = {finding["finding_id"]: finding for finding in findings}
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("Each reconciliation must be a JSON object")
+        finding_id = _string(value.get("finding_id"), "reconciliation.finding_id")
+        if finding_id not in findings_by_id:
+            raise ValueError(f"Reconciliation refers to unknown finding: {finding_id}")
+        if finding_id in seen:
+            raise ValueError(f"Duplicate reconciliation for finding: {finding_id}")
+        seen.add(finding_id)
+        finding = findings_by_id[finding_id]
+        if not finding.get("reconciliation_required"):
+            raise ValueError(f"Finding does not require reconciliation: {finding_id}")
+        rationale = _string(value.get("rationale"), "reconciliation.rationale")
+        recommendation = value.get("recommendation")
+        severity = value.get("severity")
+        if severity is not None:
+            if not isinstance(severity, str) or severity.casefold() not in SEVERITIES:
+                raise ValueError(f"Unknown reconciliation severity: {severity}")
+            severity = severity.casefold()
+        if len(finding["recommendation"].split("\n\n")) > 1:
+            recommendation = _string(
+                recommendation, "reconciliation.recommendation"
+            )
+            options = finding["recommendation"].split("\n\n")
+            if recommendation not in options:
+                raise ValueError(
+                    "Reconciliation recommendation must select one of the merged recommendations"
+                )
+            finding["recommendation"] = recommendation
+        if (
+            finding.get("severity_conflict")
+            or finding["verification"].get("severity_changed")
+        ):
+            if severity is None:
+                raise ValueError(
+                    "A severity is required to resolve the finding's severity conflict"
+                )
+        if severity is not None:
+            finding["severity"] = severity
+        finding["reconciliation"] = {
+            "rationale": rationale,
+            "recommendation": finding["recommendation"],
+            "severity": finding["severity"],
+            "timestamp": _now(),
+        }
+        finding["reconciliation_required"] = False
+
+    _advance_after_verification(state, findings)
+    _write_json(review_dir / "findings.json", payload)
+    _save_state(review_dir, state)
+    if state["status"] == "completed":
+        render_report(review_dir)
     return len(values)
 
 
 def _refresh_completion(state: dict[str, Any], findings: list[dict[str, Any]]) -> None:
     terminal_verdicts = {"rejected", "duplicate", "insufficient_evidence"}
-    resolved = all(
-        finding.get("decision") is not None
-        or finding.get("verification", {}).get("verdict") in terminal_verdicts
+    if any(finding.get("verification", {}).get("verdict") is None for finding in findings):
+        state["status"] = "verifying"
+    elif any(
+        finding.get("reconciliation_required")
         for finding in findings
-    )
-    state["status"] = "completed" if resolved else "awaiting_decisions"
+        if finding.get("verification", {}).get("verdict") not in terminal_verdicts
+    ):
+        state["status"] = "reconciling"
+    else:
+        state["status"] = "completed"
     state["decision_count"] = sum(finding.get("decision") is not None for finding in findings)
+
+
+_REPORT_CATEGORY_CODES = {
+    "br_traceability": "TRC",
+    "technical_mapping": "DAT",
+    "internal_consistency": "CON",
+    "ui_ux_context": "UIX",
+    "document_integrity": "DOC",
+}
+_REPORT_CATEGORY_LABELS = {
+    "br_traceability": "Requirement Traceability",
+    "technical_mapping": "Data Mapping",
+    "internal_consistency": "Internal Consistency",
+    "ui_ux_context": "UI/UX",
+    "document_integrity": "Document Integrity",
+}
+_CONFIDENCE_PERCENTAGES = {"high": "90-100%", "medium": "70-89%", "low": "<70%"}
+_SEVERITY_LABELS = {
+    "critical": "Must Change Before Development",
+    "high": "Must Change Before Development",
+    "medium": "Should Change",
+    "low": "Advisory",
+    "observation": "Informational",
+}
+_SEVERITY_MARKERS = {
+    "critical": "[CRITICAL]",
+    "high": "[HIGH]",
+    "medium": "[MEDIUM]",
+    "low": "[LOW]",
+    "observation": "[INFO]",
+}
+
+
+def _report_source_label(source: dict[str, Any]) -> str:
+    source_type = source["type"]
+    if source_type == "br_page":
+        return "BR"
+    if source_type == "dr_page":
+        return "DR"
+    filename = source["filename"].casefold()
+    if "api" in filename:
+        return "API"
+    if "db" in filename or "database" in filename:
+        return "DB"
+    return "Attachment"
+
+
+def _report_category_code(finding: dict[str, Any]) -> str:
+    category = finding["category"].casefold()
+    if "api" in category or "endpoint" in category:
+        return "API"
+    return _REPORT_CATEGORY_CODES.get(finding["track"], "GEN")
+
+
+def _report_category_label(finding: dict[str, Any]) -> str:
+    category = finding["category"].casefold()
+    if "api" in category or "endpoint" in category:
+        return "API Contract"
+    return _REPORT_CATEGORY_LABELS.get(
+        finding["track"], finding["category"].title()
+    )
+
+
+def _report_owner(finding: dict[str, Any]) -> str:
+    track = finding["track"]
+    category = finding["category"].casefold()
+    if track == "br_traceability":
+        return "Business Analyst + Product Owner"
+    if track == "technical_mapping":
+        if "api" in category or "endpoint" in category:
+            return "API Designer + Technical Lead"
+        if "data" in category or "database" in category:
+            return "Architect + Technical Lead"
+        return "Technical Lead + Architect"
+    if track == "ui_ux_context":
+        return "UI/UX Lead + Product Owner"
+    if track == "document_integrity":
+        return "Business Analyst + QA Lead"
+    return "Business Analyst + Solution Architect"
+
+
+def _report_testing(finding: dict[str, Any]) -> list[str]:
+    track = finding["track"]
+    category = finding["category"].casefold()
+    if track == "br_traceability":
+        return [
+            "Requirement-to-test traceability review",
+            "Acceptance-criteria coverage check",
+            "Positive and negative business-rule scenarios",
+        ]
+    if track == "technical_mapping":
+        if "api" in category or "endpoint" in category:
+            return [
+                "API schema and contract tests",
+                "Request, response, and error-path tests",
+                "Integration test against the mapped data source",
+            ]
+        return [
+            "UI-to-API-to-database integration test",
+            "Field length, type, and nullability boundary tests",
+            "Cross-sheet mapping and persistence verification",
+        ]
+    if track == "ui_ux_context":
+        return [
+            "Component and interaction tests",
+            "Validation, error, and empty-state tests",
+            "Accessibility and responsive behavior checks",
+        ]
+    if track == "document_integrity":
+        return [
+            "Document structure and completeness checks",
+            "Source-to-implementation traceability review",
+        ]
+    return [
+        "Cross-section consistency test",
+        "Positive and negative behavior scenarios",
+        "Regression test for affected functionality",
+    ]
+
+
+def _report_status(finding: dict[str, Any]) -> str:
+    return _SEVERITY_LABELS[finding["severity"]]
+
+
+def _report_sort_key(finding: dict[str, Any]) -> tuple[int, int, int]:
+    severity_rank = _SEVERITY_RANK[finding["severity"]]
+    confidence_rank = CONFIDENCE_LEVELS.index(finding["confidence"])
+    impact_rank = 0 if finding["must_change"] else 1
+    return severity_rank, confidence_rank, impact_rank
+
+
+def _report_location_lines(
+    finding: dict[str, Any], sources_by_id: dict[str, dict[str, Any]]
+) -> list[str]:
+    lines: list[str] = []
+    for evidence in finding["evidence"]:
+        source = sources_by_id[evidence["source_id"]]
+        label = _report_source_label(source)
+        lines.append(f"{label} -> {evidence['locator']}")
+    return list(dict.fromkeys(lines))
+
+
+def _report_table_value(value: str) -> str:
+    return " ".join(value.split()).replace("|", "\\|")
+
+
+def _is_workbook_source(source: dict[str, Any]) -> bool:
+    return Path(source["filename"]).suffix.casefold() in {
+        ".xls",
+        ".xlsx",
+        ".xlsm",
+        ".xlsb",
+    }
+
+
+def _report_workbook_value(value: str) -> str:
+    """Render workbook evidence as meaningful artifact identifiers only."""
+    identifiers = re.findall(
+        r"\b(?:CMP[_-][A-Za-z0-9_]+|ENT[_-][A-Za-z0-9_]+)\b",
+        value,
+    )
+    return ", ".join(dict.fromkeys(identifiers)) or "Workbook mapping"
+
+
+def _report_evidence_value(source: dict[str, Any], value: str) -> str:
+    if _is_workbook_source(source):
+        value = _report_workbook_value(value)
+    return _report_table_value(value)
+
+
+def _report_evidence_location(source: dict[str, Any], locator: str) -> str:
+    if _is_workbook_source(source):
+        locator = re.sub(
+            r"(?i)(?:cell|cells|range)\s*(?:[:=]\s*|\s+)"
+            r"\$?[A-Z]{1,3}\$?\d+(?:\s*[-:]\s*\$?[A-Z]{1,3}\$?\d+)?",
+            "",
+            locator,
+        )
+        locator = re.sub(
+            r"(?<![A-Za-z0-9_])!\$?[A-Z]{1,3}\$?\d+",
+            "!",
+            locator,
+        )
+        locator = re.sub(r"\s*(?:->|→|:)\s*$", "", locator)
+    return _report_table_value(locator).strip()
+
+
+def _report_comparison_value(value: str, conflicting: bool) -> str:
+    rendered = _report_table_value(value)
+    if any(
+        marker in rendered.casefold()
+        for marker in ("not specified", "not defined", "missing", "no mapping")
+    ):
+        return f"**MISSING / NOT DEFINED:** {rendered}"
+    return f"**CONFLICT:** {rendered}" if conflicting else rendered
+
+
+def _report_id_map(
+    function_key: str, findings: list[dict[str, Any]]
+) -> dict[str, str]:
+    counters: dict[str, int] = {}
+    identifiers: dict[str, str] = {}
+    for finding in findings:
+        code = _report_category_code(finding)
+        counters[code] = counters.get(code, 0) + 1
+        identifiers[finding["finding_id"]] = (
+            f"{function_key}-{code}-{counters[code]:03d}"
+        )
+    return identifiers
 
 
 def record_decision(
@@ -667,19 +1122,28 @@ def record_decision(
     owner = _string(owner, "decision owner")
     findings_payload = _read_json(review_dir / "findings.json")
     findings = findings_payload.get("findings", [])
+    if any(item.get("verification", {}).get("verdict") is None for item in findings):
+        raise ValueError("All findings must be independently verified before decisions")
+    if any(item.get("reconciliation_required") for item in findings):
+        raise ValueError("All finding conflicts must be reconciled before decisions")
     finding = next(
         (item for item in findings if item.get("finding_id") == finding_id),
         None,
     )
     if finding is None:
         raise ValueError(f"Unknown finding ID: {finding_id}")
+    if finding.get("decision") is not None:
+        raise ValueError(f"A decision is already recorded for finding: {finding_id}")
     verdict = finding.get("verification", {}).get("verdict")
     if verdict is None:
         raise ValueError("A finding needs independent verification before a decision")
     if verdict in {"rejected", "duplicate", "insufficient_evidence"}:
         raise ValueError(f"A finding with verdict '{verdict}' cannot receive a decision")
+    if finding.get("reconciliation_required"):
+        raise ValueError("A finding needs reconciliation before a human decision")
     finding["decision"] = {
-        "value": decision,
+        "finding_id": finding_id,
+        "decision": decision,
         "owner": owner,
         "timestamp": _now(),
         "rationale": rationale.strip(),
@@ -689,6 +1153,8 @@ def record_decision(
     state = _load_state(review_dir)
     _refresh_completion(state, findings)
     _save_state(review_dir, state)
+    if state["status"] == "completed":
+        render_review_comments(review_dir)
 
 
 def import_function_map(review_dir: Path, function_map_path: Path) -> int:
@@ -727,10 +1193,11 @@ def import_function_map(review_dir: Path, function_map_path: Path) -> int:
     return len(entries)
 
 
-def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
+def _render_legacy_report(review_dir: Path, output_path: Path | None = None) -> Path:
     state = _load_state(review_dir)
     findings = _read_json(review_dir / "findings.json").get("findings", [])
     function_map = _read_json(review_dir / "function_map.json").get("entries", [])
+    evidence_snapshot = render_evidence_snapshot(review_dir)
     report_path = output_path or review_dir / "review_report.md"
     lines = [
         f"# DR review report: {state['function_key']} / {state['review_id']}",
@@ -748,13 +1215,17 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
         "",
         "## Evidence snapshot",
         "",
-        "| Source | Type | File | SHA-256 | Text extraction |",
+        f"Original extracted source detail: `{evidence_snapshot.name}`.",
+        "Integrity hashes are retained in `manifest.json`; they are not shown "
+        "as the evidence content.",
+        "",
+        "| Source | Type | File | Snapshot | Text extraction |",
         "|---|---|---|---|---|",
     ]
     for source in state["sources"]:
         lines.append(
             f"| `{source['source_id']}` | {source['type']} | {source['filename']} "
-            f"| `{source['sha256']}` | {source['text_extraction']} |"
+            f"| `{source['snapshot_path']}` | {source['text_extraction']} |"
         )
     if function_map:
         lines.extend(["", "## Function map", ""])
@@ -794,7 +1265,7 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
                 f"- Reconciliation required: "
                 f"{'yes' if finding['reconciliation_required'] else 'no'}",
                 f"- Decision: "
-                f"{finding['decision']['value'] if finding['decision'] else 'not recorded'}",
+                f"{finding['decision']['decision'] if finding['decision'] else 'not recorded'}",
                 "",
                 finding["summary"],
                 "",
@@ -815,6 +1286,14 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
                 [
                     "",
                     f"**Verification rationale:** {finding['verification']['rationale']}",
+                ]
+            )
+        reconciliation = finding.get("reconciliation")
+        if reconciliation:
+            lines.extend(
+                [
+                    "",
+                    f"**Reconciliation rationale:** {reconciliation['rationale']}",
                 ]
             )
         if finding["decision"]:
@@ -841,6 +1320,584 @@ def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
     return report_path
 
 
+def _finding_reason(finding: dict[str, Any]) -> str:
+    evidence_locations = ", ".join(
+        evidence["locator"] for evidence in finding["evidence"]
+    )
+    return (
+        f"The review identified a mismatch, omission, or ambiguity in "
+        f"{finding['category']} at {evidence_locations}. The cited values or "
+        "missing definition are not sufficiently aligned for implementation "
+        "and testing."
+    )
+
+
+def _render_action_report(review_dir: Path, output_path: Path | None = None) -> Path:
+    """Render an action-oriented report for delivery to project reviewers."""
+    state = _load_state(review_dir)
+    render_evidence_snapshot(review_dir)
+    findings = sorted(
+        _read_json(review_dir / "findings.json").get("findings", []),
+        key=_report_sort_key,
+    )
+    function_map = _read_json(review_dir / "function_map.json").get("entries", [])
+    sources_by_id = {source["source_id"]: source for source in state["sources"]}
+    report_ids = _report_id_map(state["function_key"], findings)
+    severity_counts = {
+        severity: sum(finding["severity"] == severity for finding in findings)
+        for severity in ("critical", "high", "medium", "low", "observation")
+    }
+    category_counts: dict[str, int] = {}
+    for finding in findings:
+        category = _report_category_label(finding)
+        category_counts[category] = category_counts.get(category, 0) + 1
+    must_change = sum(finding["must_change"] for finding in findings)
+    readiness = (
+        "Not Ready"
+        if severity_counts["critical"] or severity_counts["high"]
+        else "Ready with Conditions"
+        if findings
+        else "Ready"
+    )
+    report_path = output_path or review_dir / "review_report.md"
+    lines = [
+        f"# DR Review Report: {state['function_key']}",
+        "",
+        "## Executive Summary",
+        "",
+        f"- **Function Key:** {state['function_key']}",
+        f"- **Review ID:** {state['review_id']}",
+        f"- **Overall Status:** "
+        f"{'REVIEW REQUIRED' if findings else 'NO FINDINGS IDENTIFIED'}",
+        "",
+        "### Findings Summary",
+        "",
+        f"- Total Findings: {len(findings)}",
+        f"- Must Change: {must_change}",
+        f"- Should Change: {severity_counts['medium']}",
+        f"- Advisory: {severity_counts['low']}",
+        f"- Informational: {severity_counts['observation']}",
+        "",
+        "### Category Breakdown",
+        "",
+    ]
+    lines.extend(
+        f"- {category}: {count}"
+        for category, count in sorted(category_counts.items())
+    )
+    if not category_counts:
+        lines.append("- No findings")
+    lines.extend(["", "### High Risk Findings", ""])
+    high_risk = [
+        finding
+        for finding in findings
+        if finding["severity"] in {"critical", "high"}
+    ][:5]
+    lines.extend([
+        f"- {report_ids[finding['finding_id']]}: {finding['title']}"
+        for finding in high_risk
+    ] or ["- None"])
+    lines.extend(
+        [
+            "",
+            f"### Development Readiness: {readiness}",
+            "",
+            "## Findings",
+            "",
+        ]
+    )
+    if not findings:
+        lines.append("No findings were identified by the selected review tracks.")
+
+    for finding in findings:
+        report_id = report_ids[finding["finding_id"]]
+        category_label = _report_category_label(finding)
+        locations = _report_location_lines(finding, sources_by_id)
+        lines.extend(
+            [
+                f"### {_SEVERITY_MARKERS[finding['severity']]} {report_id}",
+                f"#### {finding['title']}",
+                "",
+                f"**Finding Type:** {category_label}",
+                f"**Category:** {finding['category']}",
+                "",
+                "#### Summary",
+                "",
+                finding["summary"],
+                "",
+                "#### Why This Finding Was Raised",
+                "",
+                _finding_reason(finding),
+                "",
+                "#### Business Impact",
+                "",
+                finding["impact"],
+                "",
+                "#### Source Comparison",
+                "",
+                "| Source | Review Location | Value |",
+                "|---|---|---|",
+            ]
+        )
+        comparison_values = {
+            normalize_quote(evidence["quote"])
+            for evidence in finding["evidence"]
+        }
+        conflicting = len(comparison_values) > 1
+        for evidence in finding["evidence"]:
+            source = sources_by_id[evidence["source_id"]]
+            lines.append(
+                f"| {_report_source_label(source)} | "
+                f"{_report_table_value(evidence['locator'])} | "
+                f"{_report_comparison_value(evidence['quote'], conflicting)} |"
+            )
+        lines.extend(["", "#### Review Location", ""])
+        for location in locations:
+            label, _, path = location.partition(" -> ")
+            lines.extend([f"- {label}", f"  - {path}"])
+        if not locations:
+            lines.append("- Location not specified in the finding evidence.")
+        lines.extend(["", "#### Affected Components", ""])
+        lines.extend(f"- {section}" for section in finding["affected_sections"])
+        lines.extend(
+            [
+                "",
+                "#### Confidence",
+                "",
+                f"{finding['confidence'].title()} "
+                f"({_CONFIDENCE_PERCENTAGES[finding['confidence']]})",
+                "",
+                "#### Required Action",
+                "",
+                finding["recommendation"],
+                "",
+                "#### Suggested Owner",
+                "",
+                _report_owner(finding),
+                "",
+                "#### Testing Needed",
+                "",
+            ]
+        )
+        lines.extend(f"- {test}" for test in _report_testing(finding))
+        lines.extend(
+            [
+                "",
+                "#### Status",
+                "",
+                _report_status(finding),
+                "",
+            ]
+        )
+
+    critical_count = severity_counts["critical"] + severity_counts["high"]
+    low_count = severity_counts["low"] + severity_counts["observation"]
+    readiness_actions = [
+        (
+            f"Resolve the {critical_count} critical/high-risk finding(s) "
+            "before development."
+            if critical_count
+            else "No critical or high-risk remediation is currently required."
+        ),
+        "Assign the suggested owners and confirm remediation acceptance criteria.",
+        "Review the listed test scenarios with QA before implementation sign-off.",
+    ]
+    lines.extend(
+        [
+            "## Development Readiness Assessment",
+            "",
+            f"- Critical Findings: {critical_count}",
+            f"- Medium Findings: {severity_counts['medium']}",
+            f"- Low Findings: {low_count}",
+            "",
+            f"**Readiness Recommendation:** {readiness}",
+            "",
+            "### Next Actions",
+            "",
+        ]
+    )
+    lines.extend(f"- {action}" for action in readiness_actions)
+    lines.extend(
+        [
+            "",
+            "### Suggested Review Meeting Agenda",
+            "",
+            "- Confirm ownership and target dates for must-change findings.",
+            "- Resolve unresolved requirement, API, data, and UI decisions.",
+            "- Confirm test coverage and entry criteria for development.",
+            "",
+            f"Function-map entries available: {len(function_map)}.",
+            "",
+            "This report is a reviewer-facing summary of the verified local review.",
+            "Source integrity metadata is retained separately in manifest.json.",
+        ]
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report_path
+
+
+_REPORT_SECTIONS = (
+    (
+        "UI Components",
+        "ui_components",
+        (
+            "Compare UI component names, types, and identifiers across the DR "
+            "and component worksheets.",
+            "Check required, optional, visible, hidden, read-only, and editable states.",
+            "Check component validation, error, empty, and unavailable behavior.",
+            "Check every Item Description component against the relevant sheets.",
+        ),
+    ),
+    (
+        "Event Mapping with API",
+        "event_api",
+        (
+            "Check that every API-triggering UI event has a defined endpoint.",
+            "Compare event IDs, triggers, preconditions, processing, and postconditions.",
+            "Check request, response, error, confirmation, and retry behavior.",
+        ),
+    ),
+    (
+        "API Mapping with Events and UI Components",
+        "api_ui",
+        (
+            "Map API request and response fields to UI components and events.",
+            "Compare field names, types, requiredness, enums, and display values.",
+            "Check that UI behavior is supported by the declared API contract.",
+        ),
+    ),
+    (
+        "DR API Coverage",
+        "dr_api",
+        (
+            "Check that APIs used by the UI and worksheets are described in the DR.",
+            "Compare API methods, paths, purposes, parameters, responses, and errors.",
+            "Check API and event references for undefined or inconsistent identifiers.",
+        ),
+    ),
+    (
+        "Database Mapping with UI Components",
+        "ui_db",
+        (
+            "Map persisted UI fields to database entities and columns.",
+            "Compare length, datatype, mandatory, nullability, and default constraints.",
+            "Check that UI validation does not exceed database constraints.",
+        ),
+    ),
+    (
+        "Database Mapping with API",
+        "api_db",
+        (
+            "Map API request and response fields to database columns or derived values.",
+            "Compare API and database names, types, lengths, requiredness, and enums.",
+            "Check create, update, retrieve, keys, and persistence behavior.",
+        ),
+    ),
+    (
+        "DR Alignment with BR",
+        "br_alignment",
+        (
+            "Check every BR requirement and business rule has DR coverage.",
+            "Compare roles, validations, states, data requirements, and error behavior.",
+            "Check that DR behavior does not weaken or contradict the BR.",
+        ),
+    ),
+    (
+        "Cross-Section Consistency",
+        "cross_consistency",
+        (
+            "Compare the same components, fields, endpoints, roles, and states across layers.",
+            "Check lengths, datatypes, enums, labels, events, and error behavior.",
+            "Check references between DR, BR, UI, API, and database sheets.",
+        ),
+    ),
+)
+
+
+def _report_section_for_finding(finding: dict[str, Any]) -> str:
+    text = " ".join(
+        [
+            finding["track"],
+            finding["category"],
+            finding["title"],
+            finding["summary"],
+            " ".join(finding["affected_sections"]),
+        ]
+    ).casefold()
+    if finding["track"] == "br_traceability":
+        return "br_alignment"
+    if finding["track"] == "internal_consistency":
+        return "cross_consistency"
+    if "ui" in text and "db" in text:
+        return "ui_db"
+    if "api" in text and "db" in text:
+        return "api_db"
+    if "event" in text and "api" in text:
+        return "event_api"
+    if "api" in text and "dr" in text:
+        return "dr_api"
+    if "api" in text and "ui" in text:
+        return "api_ui"
+    if finding["track"] == "ui_ux_context":
+        return "ui_components"
+    if finding["track"] == "technical_mapping":
+        return "api_ui" if "api" in text else "ui_db"
+    return "cross_consistency"
+
+
+def _finding_table_values(
+    finding: dict[str, Any],
+    sources_by_id: dict[str, dict[str, Any]],
+) -> tuple[str, str, str, str, str]:
+    evidence_by_label: dict[str, list[str]] = {}
+    locations: list[str] = []
+    for evidence in finding["evidence"]:
+        source = sources_by_id[evidence["source_id"]]
+        label = _report_source_label(source)
+        value = _report_evidence_value(source, evidence["quote"])
+        evidence_by_label.setdefault(label, []).append(value)
+        locations.append(
+            f"{label}: {source['filename']} -> "
+            f"{_report_evidence_location(source, evidence['locator'])}"
+        )
+
+    source_labels = sorted(evidence_by_label)
+    source = " ↔ ".join(source_labels) if source_labels else "Not specified"
+    br_value = " / ".join(evidence_by_label.get("BR", []))
+    dr_value = " / ".join(evidence_by_label.get("DR", []))
+    other_values = [
+        f"{label}: {' / '.join(values)}"
+        for label, values in evidence_by_label.items()
+        if label not in {"BR", "DR"}
+    ]
+    if other_values:
+        workbook_sources = [
+            evidence["source_id"]
+            for evidence in finding["evidence"]
+            if _is_workbook_source(sources_by_id[evidence["source_id"]])
+        ]
+        if workbook_sources:
+            references = " / ".join(other_values)
+            dr_value = (
+                f"{_report_table_value(finding['summary'])} "
+                f"({references})"
+            )
+        else:
+            dr_value = " / ".join(
+                value for value in [dr_value, *other_values] if value
+            )
+    return (
+        source,
+        br_value or "Not specified in cited evidence",
+        dr_value or "Not specified in cited evidence",
+        "<br>".join(dict.fromkeys(locations)) or "Not specified",
+        _report_table_value(finding["recommendation"]),
+    )
+
+
+def _render_fixed_review_report(
+    review_dir: Path, output_path: Path | None = None
+) -> Path:
+    state = _load_state(review_dir)
+    render_evidence_snapshot(review_dir)
+    findings = sorted(
+        _read_json(review_dir / "findings.json").get("findings", []),
+        key=_report_sort_key,
+    )
+    sources_by_id = {source["source_id"]: source for source in state["sources"]}
+    findings_by_section: dict[str, list[dict[str, Any]]] = {
+        key: [] for _, key, _ in _REPORT_SECTIONS
+    }
+    for finding in findings:
+        findings_by_section[_report_section_for_finding(finding)].append(finding)
+    severity_counts = {
+        severity: sum(finding["severity"] == severity for finding in findings)
+        for severity in ("critical", "high", "medium", "low", "observation")
+    }
+    readiness = (
+        "Not Ready"
+        if severity_counts["critical"] or severity_counts["high"]
+        else "Ready with Conditions"
+        if findings
+        else "Ready"
+    )
+    lines = [
+        f"# DR Review Report: {state['function_key']}",
+        "",
+        "## Executive Summary",
+        "",
+        f"- Function Key: {state['function_key']}",
+        f"- Review ID: {state['review_id']}",
+        f"- Overall Status: {'REVIEW REQUIRED' if findings else 'NO GAPS FOUND'}",
+        f"- Total Findings: {len(findings)}",
+        f"- Must Change: {sum(finding['must_change'] for finding in findings)}",
+        f"- Should Change: {severity_counts['medium']}",
+        f"- Advisory: {severity_counts['low']}",
+        f"- Informational: {severity_counts['observation']}",
+        f"- Development Readiness: {readiness}",
+        "",
+        "## Review Sections",
+        "",
+        "| Review Section | Findings | Result |",
+        "|---|---:|---|",
+    ]
+    for title, key, _ in _REPORT_SECTIONS:
+        section_findings = findings_by_section[key]
+        result = "Gaps found" if section_findings else "No gaps found"
+        lines.append(f"| {title} | {len(section_findings)} | {result} |")
+    for title, key, _checks in _REPORT_SECTIONS:
+        section_findings = findings_by_section[key]
+        lines.extend(["", f"## {title}", "", "### Findings", ""])
+        if section_findings:
+            lines.extend(
+                [
+                    "",
+                    "| No. | Severity | Finding | Source | BR Requirement | "
+                    "DR Requirement / Observation | Review Location | Recommended Action |",
+                    "|---:|---|---|---|---|---|---|---|",
+                ]
+            )
+            for number, finding in enumerate(section_findings, start=1):
+                source, br_value, dr_value, location, action = _finding_table_values(
+                    finding, sources_by_id
+                )
+                lines.append(
+                    f"| {number} | {finding['severity'].upper()} | "
+                    f"{_report_table_value(finding['title'])} | {source} | "
+                    f"{br_value} | {dr_value} | {location} | {action} |"
+                )
+        else:
+            lines.extend(
+                [
+                    "| ID | Severity | Finding | Source | BR Requirement | "
+                    "DR Requirement / Cross-Section Value | Review Location | "
+                    "Recommended Action |",
+                    "|---|---|---|---|---|---|---|---|",
+                    "| — | — | No verified gaps found | — | — | — | — | — |",
+                ]
+            )
+    lines.extend(
+        [
+            "",
+            "## Review Summary",
+            "",
+            (
+                "Review comments are listed in the sections above. "
+                "The review requires attention before development."
+                if findings
+                else "No review comments were raised. All configured checks found no gaps "
+                "in the available evidence."
+            ),
+        ]
+    )
+    report_path = output_path or review_dir / "review_report.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report_path
+
+
+def render_report(review_dir: Path, output_path: Path | None = None) -> Path:
+    """Render the fixed reviewer-facing report format."""
+    return _render_fixed_review_report(review_dir, output_path)
+
+
+def render_review_comments(review_dir: Path, output_path: Path | None = None) -> Path:
+    """Write accepted findings as a local Markdown deliverable after completion."""
+    state = _load_state(review_dir)
+    if state["status"] != "completed":
+        raise ValueError(
+            "Review comments can only be generated after the review is completed"
+        )
+
+    findings = _read_json(review_dir / "findings.json").get("findings", [])
+    accepted = [
+        finding
+        for finding in findings
+        if (finding.get("decision") or {}).get("decision") == "accept"
+    ]
+    report_path = output_path or review_dir / "review_comments.md"
+    lines = [
+        f"# Accepted DR review comments: {state['function_key']} / {state['review_id']}",
+        "",
+        f"- Scope: {state['scope']}",
+        f"- Tracks: {', '.join(state['tracks'])}",
+        f"- DR page/version: {state.get('dr_page_id') or 'local'} / "
+        f"{state.get('dr_version') or 'not supplied'}",
+        f"- BR page/version: {state.get('br_page_id') or 'local'} / "
+        f"{state.get('br_version') or 'not supplied'}",
+        f"- Completed: {state['updated_at']}",
+        f"- Accepted comments: {len(accepted)}",
+        "",
+        "This local file contains only findings explicitly accepted by the "
+        "review decision-maker. It does not modify or publish to Confluence.",
+        "",
+    ]
+    if not accepted:
+        lines.append("No findings were accepted for the review.")
+
+    for finding in accepted:
+        decision = finding["decision"]
+        verification = finding.get("verification") or {}
+        lines.extend(
+            [
+                f"## {finding['finding_id']}: {finding['title']}",
+                "",
+                f"- Severity: {finding['severity']}",
+                f"- Track(s): {', '.join(finding.get('originating_tracks') or [finding['track']])}",
+                f"- Verification: {verification.get('verdict') or 'not recorded'}",
+                f"- Decision owner: {decision['owner']}",
+                f"- Decision recorded: {decision['timestamp']}",
+                "",
+                "### Finding",
+                "",
+                finding["summary"],
+                "",
+                "### Impact",
+                "",
+                finding["impact"],
+                "",
+                "### Recommended DR change",
+                "",
+                finding["recommendation"],
+                "",
+                "### Evidence",
+                "",
+            ]
+        )
+        for evidence in finding["evidence"]:
+            quote_lines = evidence["quote"].splitlines() or [""]
+            lines.append(
+                f"- Source `{evidence['source_id']}`, {evidence['locator']}:"
+            )
+            lines.extend(f"  > {line}" for line in quote_lines)
+        if verification.get("rationale"):
+            lines.extend(
+                ["", "### Independent verification", "", verification["rationale"]]
+            )
+        reconciliation = finding.get("reconciliation")
+        if reconciliation:
+            lines.extend(
+                [
+                    "",
+                    "### Reconciliation",
+                    "",
+                    reconciliation.get("rationale") or "Resolved; no rationale recorded.",
+                ]
+            )
+        if decision.get("rationale"):
+            lines.extend(["", "### Decision rationale", "", decision["rationale"]])
+        if decision.get("intended_action"):
+            lines.extend(
+                ["", "### Intended follow-up", "", decision["intended_action"]]
+            )
+        lines.append("")
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return report_path
+
+
 def get_status(review_dir: Path) -> dict[str, Any]:
     state = _load_state(review_dir)
     findings = _read_json(review_dir / "findings.json").get("findings", [])
@@ -853,5 +1910,15 @@ def get_status(review_dir: Path) -> dict[str, Any]:
         "sources": len(state["sources"]),
         "findings": len(findings),
         "decisions": sum(finding.get("decision") is not None for finding in findings),
+        "unverified": sum(
+            finding.get("verification", {}).get("verdict") is None
+            for finding in findings
+        ),
+        "needs_reconciliation": sum(
+            finding.get("reconciliation_required", False) for finding in findings
+        ),
+        "review_comments": str((review_dir / "review_comments.md").resolve())
+        if (review_dir / "review_comments.md").is_file()
+        else None,
         "review_dir": str(review_dir.resolve()),
     }

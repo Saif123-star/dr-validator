@@ -1,0 +1,25 @@
+precedence:
+  - approved_change_decision
+  - current_br
+  - approved_figma
+  - workshop_decision
+  - unresolved_comment
+source_types:
+  dr_page:
+    authoritative_for: [dr_content]
+    applicable_tracks: [document_integrity, br_traceability, internal_consistency, ui_ux_context, technical_mapping]
+  br_page:
+    authoritative_for: [business_requirements]
+    applicable_tracks: [br_traceability, technical_mapping]
+  attachment:
+    authoritative_for: [attachment_content]
+    applicable_tracks: [document_integrity, internal_consistency, ui_ux_context, technical_mapping]
+  figma_export:
+    authoritative_for: [approved_design]
+    applicable_tracks: [ui_ux_context]
+  workshop_decision:
+    authoritative_for: [approved_decision]
+    applicable_tracks: [br_traceability, ui_ux_context, technical_mapping]
+  comment_export:
+    authoritative_for: [unresolved_comment]
+    applicable_tracks: [ui_ux_context]
